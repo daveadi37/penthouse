@@ -17,6 +17,15 @@ dist/
 *service-role*
 *service_role*
 
+# Snapshots of the migrations. A zip or a tarball of supabase/migrations
+# duplicates the source of truth as an opaque binary and goes stale the
+# first time a migration changes — which it did, silently carrying the
+# broken storage file after that was fixed. Generate one when it is
+# needed; do not commit it.
+app/supabase/migrations.zip
+app/supabase/*.zip
+app/supabase/*.tar.gz
+
 # Supabase CLI local state
 app/supabase/.branches/
 app/supabase/.temp/
