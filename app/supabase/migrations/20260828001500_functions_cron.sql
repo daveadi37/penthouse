@@ -492,4 +492,9 @@ select cron.schedule('push-queue', '*/2 * * * *', $$
   where current_setting('app.functions_url', true) is not null
 $$);
 
-comment on extension pg_cron is 'Holds the clock for the 05:00 day build and the 09:00 sheet deadline. Schedules are UTC; Dubai is UTC+4 all year.';
+-- pg_cron holds the clock for the 05:00 day build and the 09:00 sheet
+-- deadline. Schedules above are UTC; Dubai is UTC+4 all year.
+--
+-- Written as a plain comment rather than COMMENT ON EXTENSION, because
+-- on a hosted Supabase project the extension is not owned by the role
+-- running this file, and commenting on it fails with 42501.
