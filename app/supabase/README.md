@@ -30,13 +30,17 @@ The right route if you have a terminal and will be doing this more than once.
 ```bash
 npm install -g supabase          # once, on this machine
 supabase login                   # once, opens the browser
-supabase link --project-ref <your-project-ref>
+supabase link --project-ref uyasnfutcowdhdpkfhhg
 supabase db push
 ```
 
-`--project-ref` is the string in your project's URL — the `abcdefghijklm` part
-of `https://abcdefghijklm.supabase.co`. Dashboard → **Project Settings** →
-**General** shows it as *Reference ID*.
+`--project-ref` is the string in the project's URL — the `uyasnfutcowdhdpkfhhg`
+part of `https://uyasnfutcowdhdpkfhhg.supabase.co`. That is this house's
+project, already filled in above. Dashboard → **Project Settings** →
+**General** shows it as *Reference ID* if it is ever needed again.
+
+`link` asks for the database password, which is the one you chose when the
+project was created. It is not in this repository and must not be.
 
 `db push` applies every migration that has not been applied yet, in filename
 order, and records what it did. Run it again after adding a migration and it

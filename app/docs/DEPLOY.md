@@ -14,7 +14,16 @@ people who are getting accounts.
 
 ---
 
-## Step 1 — Create the Supabase project
+## Step 1 — The Supabase project
+
+**Already done.** The project is `uyasnfutcowdhdpkfhhg`, live at
+`https://uyasnfutcowdhdpkfhhg.supabase.co`, and the app is configured against
+it. Skip to step 2.
+
+<details>
+<summary>If a project ever has to be made again, from nothing</summary>
+
+### Creating the Supabase project
 
 1. Go to **supabase.com**, sign up, and create a new project.
 2. Name it **goldcrest-3808**.
@@ -25,6 +34,8 @@ people who are getting accounts.
 4. Choose a strong database password and put it somewhere safe. You will not
    need it day to day, and there is no way to recover it.
 5. Wait about two minutes while the project is built.
+
+</details>
 
 ## Step 2 — Build the database
 
@@ -124,16 +135,19 @@ Three values. In the `app` folder, next to `package.json`, create a file called
 exactly **`.env`**:
 
 ```
-VITE_SUPABASE_URL=https://abcdefghijklm.supabase.co
+VITE_SUPABASE_URL=https://uyasnfutcowdhdpkfhhg.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJhbGciOi...
 VITE_VAPID_PUBLIC_KEY=BJ...
 ```
 
 Where each comes from:
 
-- **`VITE_SUPABASE_URL`** and **`VITE_SUPABASE_ANON_KEY`** — Dashboard →
-  **Project Settings** → **API**. Copy the *Project URL* and the *anon public*
-  key. Take the whole key; it is long and runs to one line.
+- **`VITE_SUPABASE_URL`** — already known for this house:
+  `https://uyasnfutcowdhdpkfhhg.supabase.co`. It is filled in for you in
+  `app/.env`.
+- **`VITE_SUPABASE_ANON_KEY`** — Dashboard → **Project Settings** → **API**,
+  the *anon public* key. Take the whole thing; it is long and runs to one
+  line. This is the only value still missing.
 - **`VITE_VAPID_PUBLIC_KEY`** — the public half of a key pair used to sign push
   notifications. Generate the pair once, on your laptop:
 

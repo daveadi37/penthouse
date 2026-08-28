@@ -47,10 +47,13 @@ export const SHEET_META = {
   postByTime: '09:00',
   checkedByName: 'Earl Tiongco',
   /**
-   * The observance runs to the 11th of September. Day one is inferred
-   * from the source document: the sheet dated Friday 21 August is
-   * headed '9th day of the Prayer', which puts day one at 13 August and
-   * makes it thirty days.
+   * Thirty days, 13 August to 11 September 2026. Both dates confirmed by
+   * Aditya on 2026-08-28. Day one was first worked out from the source
+   * document — the sheet dated Friday 21 August is headed '9th day of
+   * the Prayer' — and that reading turned out to be right.
+   *
+   * Moving either date moves the occasion line on every sheet and the
+   * window the food rule bites in. Nothing else reads them.
    */
   observanceFrom: '2026-08-13',
   observanceTo: '2026-09-11',

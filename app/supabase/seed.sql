@@ -186,8 +186,11 @@ on conflict (id) do nothing;
 
 -- ---------- the observance ----------
 
--- Thirty days. Day one is fixed by the source document: the sheet dated
--- Friday 21 August is headed '9th day of the Prayer'.
+-- Thirty days, 13 August to 11 September 2026, both confirmed. Day one
+-- was first worked out from the source document — the sheet dated Friday
+-- 21 August is headed '9th day of the Prayer' — and that reading was
+-- right. These two dates drive the occasion line on every sheet and the
+-- window enforce_food_rule() refuses meat in.
 insert into observances (id, name, start_date, end_date, day_count, notes, active) values (
   'ob-prayer', 'The Prayer', '2026-08-13', '2026-09-11', 30,
   'The priests lead every afternoon from 16:00 and the meal follows the aarti. The ninth day was the large sitting. All food is vegetarian for the whole thirty days.',

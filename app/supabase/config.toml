@@ -4,6 +4,10 @@
 # this machine, and the settings the CLI pushes when the project is linked.
 # Every block below is set deliberately. Read the comment before changing one.
 
+# The name the CLI uses for the LOCAL stack's containers. It is not the
+# hosted project reference — that is uyasnfutcowdhdpkfhhg, and the CLI
+# learns it from `supabase link`, which writes it to supabase/.temp/
+# rather than to this file.
 project_id = "goldcrest-3808"
 
 # ---------------------------------------------------------------------------
