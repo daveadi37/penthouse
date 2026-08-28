@@ -1,0 +1,30 @@
+# Dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Environment. The anon key is safe to ship in a built bundle, but the
+# file itself is per-machine and the VAPID public key changes with the
+# project — so it is configured, not committed. See app/docs/DEPLOY.md.
+.env
+.env.*
+!.env.example
+
+# The service-role key and the VAPID private key live in Supabase Edge
+# Function secrets and must never reach this repository. Nothing here
+# should ever match, and if it does, something has gone wrong.
+*.pem
+*service-role*
+*service_role*
+
+# Supabase CLI local state
+app/supabase/.branches/
+app/supabase/.temp/
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+*.local
+.idea/
+.vscode/*
+!.vscode/extensions.json

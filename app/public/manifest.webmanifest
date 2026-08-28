@@ -1,0 +1,16 @@
+{
+  "name": "Goldcrest 3808 — House Operations",
+  "short_name": "The House",
+  "description": "Private residence and office operations",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F2F1ED",
+  "theme_color": "#F2F1ED",
+  "icons": [
+    { "src": "icon.svg",     "sizes": "any",     "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

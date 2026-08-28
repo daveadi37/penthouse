@@ -1,0 +1,150 @@
+/* ============================================================
+   Design tokens — carried across from the original build so the
+   app looks like itself. Paper, deep green, bronze, serif headings.
+   Zone colour is new and load-bearing: green household, bronze
+   office, slate shared.
+   ============================================================ */
+
+:root {
+  --paper: #f2f1ed;
+  --card: #ffffff;
+  --card-2: #faf9f6;
+  --card-3: #f4f3ee;
+
+  --ink: #1e211f;
+  --ink-2: #40443e;
+  --muted: #6f736e;
+  --faint: #9a9e98;
+  --line: #e3e2db;
+  --line-2: #edece6;
+
+  --accent: #38493f;
+  --accent-soft: #e9ede9;
+  --accent-line: #c7d2c8;
+  --accent-ink: #2b382f;
+
+  --house: #38493f;
+  --house-soft: #e7ece7;
+  --house-line: #c3d0c5;
+  --office: #8a6539;
+  --office-soft: #f2ebde;
+  --office-line: #ddccb0;
+  --shared: #45657e;
+  --shared-soft: #e6eef3;
+  --shared-line: #c6d7e1;
+
+  --green: #4a7c59;
+  --green-soft: #e9f1eb;
+  --amber: #a97c23;
+  --amber-soft: #faf2df;
+  --rust: #a34a3c;
+  --rust-soft: #f8eae7;
+  --blue: #4a6c86;
+  --blue-soft: #eaf0f4;
+  --bronze: #9a7b4f;
+  --bronze-soft: #f3ede3;
+
+  --r: 16px;
+  --r-sm: 11px;
+  --r-xs: 7px;
+
+  --shadow: 0 1px 2px rgba(30, 33, 31, 0.04), 0 8px 24px -14px rgba(30, 33, 31, 0.14);
+  --shadow-lg: 0 2px 6px rgba(30, 33, 31, 0.06), 0 24px 60px -20px rgba(30, 33, 31, 0.26);
+
+  --serif: ui-serif, 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+
+  --nav-w: 244px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --paper: #141614;
+    --card: #1c1f1c;
+    --card-2: #232623;
+    --card-3: #292d29;
+
+    --ink: #edece4;
+    --ink-2: #c8cac1;
+    --muted: #979b91;
+    --faint: #70746b;
+    --line: #2e322d;
+    --line-2: #272b26;
+
+    --accent: #93b39d;
+    --accent-soft: #1e271f;
+    --accent-line: #35473a;
+    --accent-ink: #a9c4b1;
+
+    --house: #93b39d;
+    --house-soft: #1d261e;
+    --house-line: #334537;
+    --office: #c8a672;
+    --office-soft: #262016;
+    --office-line: #4a3d28;
+    --shared: #90b1c7;
+    --shared-soft: #1a2228;
+    --shared-line: #2f4250;
+
+    --green: #7fb08d;
+    --green-soft: #1a251d;
+    --amber: #cfa144;
+    --amber-soft: #262015;
+    --rust: #d0846f;
+    --rust-soft: #281a17;
+    --blue: #8aacc4;
+    --blue-soft: #182127;
+    --bronze: #c8a672;
+    --bronze-soft: #262016;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -14px rgba(0, 0, 0, 0.7);
+    --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.5), 0 24px 60px -20px rgba(0, 0, 0, 0.85);
+  }
+}
+
+:root[data-theme='dark'] {
+  --paper: #141614;
+  --card: #1c1f1c;
+  --card-2: #232623;
+  --card-3: #292d29;
+
+  --ink: #edece4;
+  --ink-2: #c8cac1;
+  --muted: #979b91;
+  --faint: #70746b;
+  --line: #2e322d;
+  --line-2: #272b26;
+
+  --accent: #93b39d;
+  --accent-soft: #1e271f;
+  --accent-line: #35473a;
+  --accent-ink: #a9c4b1;
+
+  --house: #93b39d;
+  --house-soft: #1d261e;
+  --house-line: #334537;
+  --office: #c8a672;
+  --office-soft: #262016;
+  --office-line: #4a3d28;
+  --shared: #90b1c7;
+  --shared-soft: #1a2228;
+  --shared-line: #2f4250;
+
+  --green: #7fb08d;
+  --green-soft: #1a251d;
+  --amber: #cfa144;
+  --amber-soft: #262015;
+  --rust: #d0846f;
+  --rust-soft: #281a17;
+  --blue: #8aacc4;
+  --blue-soft: #182127;
+  --bronze: #c8a672;
+  --bronze-soft: #262016;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -14px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.5), 0 24px 60px -20px rgba(0, 0, 0, 0.85);
+}

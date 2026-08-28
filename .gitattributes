@@ -1,0 +1,16 @@
+# Normalise to LF in the repository. Checked out native on Windows, so
+# working copies are unaffected — this only stops the diff of a file
+# edited on a Mac and a PC being the whole file.
+* text=auto eol=lf
+
+# Binary, and not to be touched.
+*.png binary
+*.jpg binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+# The lockfile is generated. Collapsing it in reviews keeps a real
+# change visible next to it.
+package-lock.json linguist-generated=true -diff
