@@ -43,6 +43,11 @@ The SQL is in the `supabase/migrations` folder. There are two ways to run it
 and both are written out in **`supabase/README.md`** — read that file and
 follow one of them.
 
+Without the CLI it is one paste: enable **pg_cron** and **pg_net** under
+Database → Extensions, then run **`supabase/deploy-all.sql`** in the SQL
+editor. That file is all sixteen migrations and the seed, concatenated in
+order.
+
 The short version: sixteen migrations then `seed.sql`, run once, in filename
 order, top to bottom. Order matters. If a file fails, stop and read the error
 rather than carrying on.
@@ -186,8 +191,14 @@ Two things to know:
 Two more things in the dashboard while you are there:
 
 - **Authentication** → **Providers** → **Email**: turn **Enable email signups**
-  OFF. Accounts are created by you, from the app. Leaving signups on means
-  anybody who finds the address can make themselves an account.
+  OFF. **This is currently ON**, checked 2026-08-28, which means anybody who
+  finds the address can make themselves an account and be a signed-in user of
+  this house. Row-level security still refuses them every row, because they
+  would have no `profiles` row and so no capabilities — but an account that
+  should not exist is not something to leave standing on the strength of a
+  second line of defence. Turn it off before the address is given to anyone.
+
+  Accounts are created by you, from the app, and no other way.
 - **Authentication** → **URL Configuration**: set the **Site URL** to the real
   address from step 6.
 

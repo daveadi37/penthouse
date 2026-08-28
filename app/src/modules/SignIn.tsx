@@ -74,6 +74,28 @@ export function SignIn({ onDemo }: { onDemo: () => void }) {
             <div className="muted center" style={{ fontSize: 12.5, marginTop: 14, lineHeight: 1.5 }}>
               There is no password reset. Aditya sets every password — ask him and he will set a new one.
             </div>
+
+            {/*
+              A way past the door, in development only. Between wiring the
+              keys up and running the migrations there is a window where a
+              backend is configured but has no tables and no accounts in
+              it — and without this, that window locks you out of your own
+              app on your own machine.
+
+              import.meta.env.DEV is compiled to a literal false in a
+              production build, so this block is removed entirely by the
+              bundler. It cannot appear on the iPad.
+            */}
+            {import.meta.env.DEV && (
+              <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+                <Btn variant="ghost" block onClick={onDemo}>
+                  Look at the seeded house instead
+                </Btn>
+                <div className="faint center" style={{ fontSize: 11.5, marginTop: 8, lineHeight: 1.45 }}>
+                  Development builds only. Never present in a deployed bundle.
+                </div>
+              </div>
+            )}
           </form>
         ) : (
           <>

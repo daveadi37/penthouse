@@ -76,10 +76,32 @@ ever switched on.
 
 ---
 
-## Route two — the dashboard SQL editor
+## Route two — the dashboard SQL editor, in one paste
 
-The right route if you would rather not install anything. It is more clicking
-and there is no record of what has been run, so be methodical.
+The right route if you would rather not install anything.
+
+1. Dashboard → **Database** → **Extensions**. Enable **pg_cron** and
+   **pg_net**. The first migration creates them, but on a hosted project they
+   often have to be switched on here first, and it is the one failure that
+   stops everything else.
+2. Dashboard → **SQL Editor** → **New query**.
+3. Open **`supabase/deploy-all.sql`**, select all, paste, and press **Run**.
+   That is all sixteen migrations and the seed, in order, in one go.
+4. Wait for *Success*. Then **Table Editor** should show seventy-five tables.
+
+`deploy-all.sql` is generated from the migrations — never edited by hand.
+Regenerate it after changing any migration:
+
+```bash
+npm run sql:bundle
+```
+
+It exists only for this route. It keeps no record of what it has run, so a
+second run fails on the first type that already exists. That failure is loud
+and harmless, but it is why anybody with the CLI should use route one.
+
+<details>
+<summary>Or paste the seventeen files one at a time</summary>
 
 1. Dashboard → **SQL Editor** → **New query**.
 2. Open the first migration file in a text editor, select all, copy, paste it
@@ -87,6 +109,8 @@ and there is no record of what has been run, so be methodical.
 3. Clear the editor and do the same with the next file. Work down the list in
    the order printed below, without skipping any.
 4. When all sixteen migrations have run, do the same with `seed.sql`.
+
+</details>
 
 If a file returns an error, stop. Do not carry on to the next one. Read the
 error — it almost always names the thing that is missing, which means an
