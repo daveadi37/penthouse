@@ -11,7 +11,7 @@
 --
 --   issues/<issue-id>/<file>        photographs of a fault
 --   incidents/<incident-id>/<file>  photographs of an incident
---   sheets/<date>/<file>            the set-up and clear-up photographs
+--   chat/<message-id>/<file>        a photograph posted to the house chat
 --   assets/<asset-id>/<file>        the thing itself, and its manual
 --   documents/<document-id>/<file>  warranties, contracts, visas
 --   receipts/<profile-id>/<file>    petty cash receipts
@@ -90,7 +90,9 @@ begin
       and case (storage.foldername(name))[1]
             when 'issues' then has_capability('issue.viewAll') or has_capability('issue.raise')
             when 'incidents' then has_capability('issue.viewAll')
-            when 'sheets' then has_capability('sheet.view')
+            -- Same capability as the message the photograph hangs off.
+            -- A picture of the new gate code is as readable as typing it.
+            when 'chat' then has_capability('chat.view')
             when 'assets' then has_capability('property.view')
             when 'documents' then has_capability('documents.view')
             when 'receipts' then has_capability('money.view')
@@ -109,7 +111,7 @@ begin
       and case (storage.foldername(name))[1]
             when 'issues' then has_capability('issue.raise')
             when 'incidents' then has_capability('issue.raise')
-            when 'sheets' then has_capability('sheet.edit')
+            when 'chat' then has_capability('chat.post')
             when 'assets' then has_capability('property.edit')
             when 'documents' then has_capability('documents.view')
             -- Anybody may photograph their own receipt. R19: cash spent

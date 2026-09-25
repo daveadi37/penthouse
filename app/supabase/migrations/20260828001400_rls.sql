@@ -39,9 +39,6 @@ begin
     'roles', 'role_capabilities', 'profiles', 'areas', 'settings',
     'task_categories', 'library_tasks', 'task_instances', 'procedures',
     'appointments', 'shifts', 'absences', 'coverage_rules',
-    'running_sheets', 'sheet_roster_rows', 'sheet_order_rows', 'sheet_menu_rows',
-    'sheet_shopping_rows', 'sheet_guest_rows', 'sheet_check_groups',
-    'sheet_check_items', 'prayer_breaks', 'toilet_checks', 'sheet_photos',
     'issues', 'issue_photos', 'issue_comments', 'incidents', 'incident_photos',
     'inventory_categories', 'inventory_items', 'inventory_movements',
     'shopping_items', 'meals', 'meal_ingredients', 'waste_entries', 'laundry_slots',
@@ -53,7 +50,7 @@ begin
     'recurring_charges', 'petty_cash', 'documents', 'document_links',
     'staff_details', 'attendance', 'leave_requests', 'staff_reviews',
     'guests', 'house_events', 'occasion_tasks', 'occasion_templates',
-    'occasion_template_tasks', 'vacations', 'observances', 'divo_log', 'shrine_checks',
+    'occasion_template_tasks', 'vacations',
     'notifications', 'notification_prefs', 'push_subscriptions', 'audit_log'
   ] loop
     execute format('alter table %I enable row level security', t);
@@ -142,25 +139,16 @@ select grant_table('occasion_tasks', 'occasions.view', 'day.tick');
 select grant_table('occasion_templates', 'occasions.view', 'occasions.edit');
 select grant_table('occasion_template_tasks', 'occasions.view', 'occasions.edit');
 select grant_table('vacations', 'occasions.view', 'occasions.edit');
-select grant_table('observances', 'sheet.view', 'settings.edit');
 
 select grant_table('incidents', 'issue.viewAll', 'issue.raise');
 select grant_table('incident_photos', 'issue.viewAll', 'issue.raise');
 
-select grant_table('running_sheets', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_roster_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_order_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_menu_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_shopping_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_guest_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_check_groups', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_check_items', 'sheet.view', 'sheet.edit');
-select grant_table('prayer_breaks', 'sheet.view', 'sheet.edit');
-select grant_table('toilet_checks', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_photos', 'sheet.view', 'sheet.edit');
-
-select grant_table('divo_log', 'shrine.view', 'shrine.log');
-select grant_table('shrine_checks', 'shrine.view', 'shrine.log');
+-- The house chat is the one table whose rules are not here. It is
+-- created in 20260828001700_chat.sql, which is after this file, and a
+-- policy cannot be written for a table that does not exist yet — so its
+-- enable, its force and its grant_table call all live in that file
+-- alongside the table. grant_table() itself is defined above and is
+-- still what writes them.
 
 select grant_table('task_instances', 'day.view', 'day.tick');
 
@@ -213,8 +201,17 @@ create policy role_capabilities_write on role_capabilities
 -- would mean a checklist that cannot say who a task is for. What is not
 -- here is anything sensitive: pay, visas and passports are in
 -- staff_details, which is a different table with a different rule.
+-- Everybody in the house can see everybody in the house — names have to
+-- resolve on a task, a message and a shift. But `using (true)` gave the
+-- list to any authenticated account whatsoever, including one that this
+-- house has never heard of: sign up, get a JWT, read nine names, emails,
+-- phone numbers and dietary notes. Email signups are on by default, so
+-- that is anyone who finds the address.
+--
+-- Holding a profile is the line. A stranger reads nothing and lands on
+-- the "not linked yet" screen, which is what it was written for.
 create policy profiles_read on profiles
-  for select to authenticated using (true);
+  for select to authenticated using (my_profile_id() is not null);
 
 create policy profiles_insert on profiles
   for insert to authenticated
@@ -369,8 +366,8 @@ create policy attendance_insert on attendance
   for insert to authenticated
   with check (has_capability('people.manage') or staff_id = my_profile_id());
 
--- No update, no delete. For Reza this is the pay record, and a pay
--- record that can be quietly edited is not one.
+-- No update, no delete. For Marvin and Rosie this is the pay record,
+-- and a pay record that can be quietly edited is not one.
 
 create policy leave_read on leave_requests
   for select to authenticated
@@ -433,8 +430,16 @@ create policy audit_read on audit_log
   for select to authenticated using (has_capability('audit.view'));
 
 
--- ---------- 5. the shorthand does not outlive the file ----------
+-- ---------- 5. the shorthand outlives this file by two migrations ----------
 
 -- grant_table() writes policies, which means anybody who could call it
--- could write themselves a policy. It has done its work.
-drop function grant_table(text, text, text);
+-- could write themselves a policy, so it is dropped as soon as the last
+-- caller has run. That is NOT here: 20260828001700_chat.sql creates
+-- chat_messages — which cannot exist before this file, because this file
+-- is where the policy vocabulary is defined — and calls grant_table() on
+-- it. The drop lives at the foot of that file instead.
+--
+-- It was here once. Moving the chat_messages call out of this file to
+-- fix a 42P01 walked it straight past the drop and bought a 42883 in
+-- exchange, 3841 lines into a 4294-line paste. scripts/check-sql.mjs now
+-- tracks the live window of a function the same way it tracks a table's.

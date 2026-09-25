@@ -11,9 +11,9 @@
 -- against real tasks and the checklist is never empty on a bad
 -- connection.
 --
--- The 09:00 pair are the running sheet's whole reason for existing: a
--- reminder before, a late flag after. A sheet that goes out at 09:40
--- has already missed Marvin's shopping run.
+-- The stock sweep matters most after that. It is what turns a shelf
+-- nobody thought to look at into a line on the buy list before Marvin
+-- leaves, rather than after he gets back.
 -- ============================================================
 
 
@@ -190,164 +190,10 @@ end;
 $$;
 
 comment on function route_to(staff_role, date, text, time) is
-  'Auto-routing. Spread deterministically across everyone qualified and on shift, so Rosie does not collect every housekeeping task while Reza shows zero.';
+  'Auto-routing. Spread deterministically across everyone qualified and on shift, so one person does not collect every housekeeping task while another shows zero.';
 
 
--- ---------- 2. open tomorrow's running sheet ----------
-
-create or replace function ensure_sheet(d date) returns uuid
-language plpgsql
-security definer
-set search_path = public, pg_catalog
-as $$
-declare
-  sheet_id uuid;
-  obs observances%rowtype;
-  n smallint;
-begin
-  select id into sheet_id from running_sheets where date = d;
-  if found then
-    return sheet_id;
-  end if;
-
-  select * into obs from observances where active and d between start_date and end_date limit 1;
-  n := case when obs.id is null then null else (d - obs.start_date + 1)::smallint end;
-
-  insert into running_sheets (date, occasion, occasion_day_no)
-  values (
-    d,
-    case
-      when obs.id is null then ''
-      else ordinal_day(n) || ' day of ' || regexp_replace(obs.name, '^The ', 'the ')
-    end,
-    n
-  )
-  returning id into sheet_id;
-
-  return sheet_id;
-end;
-$$;
-
-comment on function ensure_sheet(date) is 'Opens a blank sheet for a date, headed with the day of the observance where one is running.';
-
-
-create or replace function ordinal_day(n smallint) returns text
-language sql
-immutable
-set search_path = pg_catalog
-as $$
-  select n::text || case
-    when n % 100 between 11 and 13 then 'th'
-    when n % 10 = 1 then 'st'
-    when n % 10 = 2 then 'nd'
-    when n % 10 = 3 then 'rd'
-    else 'th'
-  end;
-$$;
-
-comment on function ordinal_day(smallint) is 'Turns 9 into 9th. Written once, because the sheet, the export and the reminder all print it.';
-
-
--- ---------- 3. the 09:00 pair ----------
-
--- Before. Whoever is preparing it, and Earl, are told the sheet is due.
-create or replace function remind_sheet_due() returns integer
-language plpgsql
-security definer
-set search_path = public, pg_catalog
-as $$
-declare
-  s settings%rowtype;
-  sheet running_sheets%rowtype;
-  sent integer := 0;
-  p record;
-begin
-  select * into s from settings limit 1;
-  select * into sheet from running_sheets where date = current_date;
-
-  if sheet.id is null or sheet.status = 'posted' then
-    return 0;
-  end if;
-
-  for p in
-    select pr.id
-    from profiles pr
-    join roles r on r.id = pr.role and r.active
-    join role_capabilities rc on rc.role_id = r.id
-    where pr.active and pr.can_sign_in and rc.capability in ('sheet.post', 'sheet.check')
-    group by pr.id
-  loop
-    if should_send_now(p.id, 'task_reminder', 'normal') then
-      insert into notifications (profile_id, kind, title, body, url, priority)
-      values (
-        p.id, 'task_reminder',
-        'Today''s running sheet is due',
-        format('It goes to the %s group by %s. %s', s.whatsapp_group, to_char(s.sheet_post_by, 'HH24:MI'),
-               case
-                 when sheet.prayers_start is null and sheet.meals is null then 'The prayer start time and the number of meals are both still blank.'
-                 when sheet.prayers_start is null then 'The prayer start time is still blank.'
-                 when sheet.meals is null then 'The number of meals is still blank.'
-                 else 'It is filled in and needs checking.'
-               end),
-        '#/sheet', 'normal'
-      );
-      sent := sent + 1;
-    end if;
-  end loop;
-
-  return sent;
-end;
-$$;
-
-comment on function remind_sheet_due() is 'The nudge before 09:00, sent to whoever can post or check the sheet. Says which field is blank, because that is the actionable part.';
-
-
--- After. The sheet is late, and the whole point of the deadline is
--- that being late is visible rather than quietly normal.
-create or replace function flag_sheet_late() returns integer
-language plpgsql
-security definer
-set search_path = public, pg_catalog
-as $$
-declare
-  s settings%rowtype;
-  sheet running_sheets%rowtype;
-  sent integer := 0;
-  p record;
-begin
-  select * into s from settings limit 1;
-  select * into sheet from running_sheets where date = current_date;
-
-  if sheet.id is null or sheet.status = 'posted' then
-    return 0;
-  end if;
-
-  perform record_audit('late', 'running_sheet', current_date::text,
-                       format('Not posted by %s', to_char(s.sheet_post_by, 'HH24:MI')));
-
-  for p in
-    select pr.id
-    from profiles pr
-    join roles r on r.id = pr.role and r.active
-    join role_capabilities rc on rc.role_id = r.id
-    where pr.active and pr.can_sign_in and rc.capability = 'sheet.check'
-    group by pr.id
-  loop
-    insert into notifications (profile_id, kind, title, body, url, priority)
-    values (p.id, 'task_reminder', 'The running sheet is late',
-            format('The %s group has not had today''s sheet. A sheet that goes out at 09:40 has already missed the shopping run.', s.whatsapp_group),
-            '#/sheet', 'high');
-    sent := sent + 1;
-  end loop;
-
-  return sent;
-end;
-$$;
-
-comment on function flag_sheet_late() is 'The flag after 09:00. High priority rather than urgent — it is late, not on fire, and urgent is reserved for what wakes people.';
-
-
--- ---------- 4. the expiry and stock sweeps ----------
+-- ---------- 2. the expiry and stock sweeps ----------
 
 create or replace function sweep_expiries() returns integer
 language plpgsql
@@ -410,7 +256,8 @@ $$;
 comment on function sweep_expiries() is 'The daily read of every date that expires. Warranties, services, registration, insurance, contracts and documents in one pass.';
 
 
--- Stock, and the divo in particular. Two spare bottles, always.
+-- What is running out. This is the job the buy list depends on: nobody
+-- has to notice a shelf for it to reach the list.
 create or replace function sweep_stock() returns integer
 language plpgsql
 security definer
@@ -418,21 +265,14 @@ set search_path = public, pg_catalog
 as $$
 declare
   low_count integer;
-  divo_low boolean;
   raised integer := 0;
   p record;
 begin
   select count(*) into low_count
   from inventory_items
-  where active and qty < min_qty and not prayer_item;
+  where active and qty < min_qty;
 
-  select exists (
-    select 1 from divo_log
-    where oil_level in ('low', 'empty')
-      and logged_at > now() - interval '24 hours'
-  ) into divo_low;
-
-  if low_count = 0 and not divo_low then
+  if low_count = 0 then
     return 0;
   end if;
 
@@ -443,17 +283,10 @@ begin
     where pr.active and pr.can_sign_in and rc.capability = 'inventory.edit'
     group by pr.id
   loop
-    if divo_low and should_send_now(p.id, 'stock_low', 'high') then
-      insert into notifications (profile_id, kind, title, body, url, priority)
-      values (p.id, 'stock_low', 'The divo oil is low',
-              'Logged low or empty in the last day. Two spare bottles, always — it burns down over about three days and Marvin buys it first thing.',
-              '#/inventory', 'high');
-      raised := raised + 1;
-    end if;
-    if low_count > 0 and should_send_now(p.id, 'stock_low', 'normal') then
+    if should_send_now(p.id, 'stock_low', 'normal') then
       insert into notifications (profile_id, kind, title, body, url, priority)
       values (p.id, 'stock_low', format('%s items below minimum', low_count),
-              'On the shopping list. Prayer-marked stock is excluded — it is not available to use.',
+              'They are on the buy list. Worth a look before the next shop.',
               '#/inventory', 'normal');
       raised := raised + 1;
     end if;
@@ -463,21 +296,74 @@ begin
 end;
 $$;
 
-comment on function sweep_stock() is 'Low stock, and the divo. Prayer-marked items are excluded from the count because they are not stock anybody may use.';
+comment on function sweep_stock() is 'Counts what has fallen below its minimum and tells whoever can act on it. The daily half of how a line reaches the buy list without anybody noticing a shelf.';
 
 
--- ---------- 5. the schedule ----------
+-- ---------- 3. the schedule ----------
 
 -- All times UTC. Dubai is UTC+4 all year — no daylight saving, so these
 -- do not drift.
-select cron.schedule('build-tomorrow',   '0 1 * * *',  $$select build_day(current_date + 1), ensure_sheet(current_date + 1)$$);  -- 05:00 Dubai
-select cron.schedule('build-today',      '30 1 * * *', $$select build_day(current_date), ensure_sheet(current_date)$$);          -- 05:30 Dubai, a safety net
-select cron.schedule('sheet-due',        '0 4 * * *',  $$select remind_sheet_due()$$);                                            -- 08:00 Dubai
-select cron.schedule('sheet-late',       '15 5 * * *', $$select flag_sheet_late()$$);                                             -- 09:15 Dubai
-select cron.schedule('sweep-expiries',   '0 3 * * *',  $$select sweep_expiries()$$);                                              -- 07:00 Dubai
-select cron.schedule('sweep-stock',      '0 3 * * *',  $$select sweep_stock()$$);                                                 -- 07:00 Dubai
+select cron.schedule('build-tomorrow',   '0 1 * * *',  $$select build_day(current_date + 1)$$);  -- 05:00 Dubai
+select cron.schedule('build-today',      '30 1 * * *', $$select build_day(current_date)$$);      -- 05:30 Dubai, a safety net
+select cron.schedule('sweep-expiries',   '0 3 * * *',  $$select sweep_expiries()$$);             -- 07:00 Dubai
+select cron.schedule('sweep-stock',      '0 3 * * *',  $$select sweep_stock()$$);                -- 07:00 Dubai
 
 -- Deliveries are sent by the push Edge Function, which reads the queue.
+-- ---------- setting a role's capabilities ----------
+
+-- The capability grid is a join table with a composite key, and the
+-- app's sync layer writes whole rows keyed on a single `id` column. So
+-- there was no way to save a grid from the app at all: the Roles screen
+-- ticked boxes, said "Role saved", dropped the capabilities on the
+-- floor and restored the database's grid on the next boot. Someone
+-- would have spent an afternoon fixing permissions that never changed.
+--
+-- SECURITY INVOKER — the default, and the whole point. This runs as
+-- whoever called it, so role_capabilities_write applies to every row it
+-- touches: you cannot grant a capability you do not hold, and you
+-- cannot touch a role that outranks you. Making this DEFINER would
+-- hand any caller the entire grid.
+-- The row and the grid go together, in one statement, for a reason: a
+-- new role's row is queued in the outbox, so a separate call to set its
+-- capabilities would reach the database first and die on the foreign
+-- key. A role is one permission change, not a row edit with a side
+-- table, and saving half of it is worse than saving none.
+create or replace function save_role(
+  p_id          text,
+  p_name        text,
+  p_rank        smallint,
+  p_description text,
+  p_works       boolean,
+  p_caps        capability[]
+)
+returns void
+language plpgsql
+set search_path = public
+as $$
+begin
+  insert into roles (id, name, rank, description, works)
+  values (p_id, p_name, p_rank, coalesce(p_description, ''), coalesce(p_works, false))
+  on conflict (id) do update
+    set name        = excluded.name,
+        rank        = excluded.rank,
+        description = excluded.description,
+        works       = excluded.works,
+        updated_at  = now();
+
+  delete from role_capabilities
+   where role_id = p_id
+     and capability <> all (p_caps);
+
+  insert into role_capabilities (role_id, capability)
+  select p_id, unnest(p_caps)
+  on conflict (role_id, capability) do nothing;
+end;
+$$;
+
+comment on function save_role(text, text, smallint, text, boolean, capability[]) is
+  'Save a role and its capability grid together, as the caller. The row policies decide what is allowed — a rank above your own, or a grant you do not hold yourself, is refused.';
+
+
 -- Scheduling it here rather than in the function keeps every clock in
 -- this schema in one file.
 select cron.schedule('push-queue', '*/2 * * * *', $$
@@ -492,8 +378,8 @@ select cron.schedule('push-queue', '*/2 * * * *', $$
   where current_setting('app.functions_url', true) is not null
 $$);
 
--- pg_cron holds the clock for the 05:00 day build and the 09:00 sheet
--- deadline. Schedules above are UTC; Dubai is UTC+4 all year.
+-- pg_cron holds the clock for the 05:00 day build and the 07:00 sweeps.
+-- Schedules above are UTC; Dubai is UTC+4 all year.
 --
 -- Written as a plain comment rather than COMMENT ON EXTENSION, because
 -- on a hosted Supabase project the extension is not owned by the role

@@ -1,0 +1,256 @@
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ grant_table 
+-------------
+ 
+(1 row)
+
+ schedule 
+----------
+        1
+(1 row)
+
+ schedule 
+----------
+        2
+(1 row)
+
+ schedule 
+----------
+        3
+(1 row)
+
+ schedule 
+----------
+        4
+(1 row)
+
+ schedule 
+----------
+        5
+(1 row)
+
+NOTICE:  policy "house files are read by capability" for relation "storage.objects" does not exist, skipping
+NOTICE:  policy "house files are written by capability" for relation "storage.objects" does not exist, skipping
+NOTICE:  policy "house files are replaced by capability" for relation "storage.objects" does not exist, skipping
+NOTICE:  policy "house files are deleted by the few" for relation "storage.objects" does not exist, skipping
+ grant_table 
+-------------
+ 
+(1 row)
+
+WARNING:  "wal_level" is insufficient to publish logical changes
+HINT:  Set "wal_level" to "logical" before creating subscriptions.
+ build_day 
+-----------
+        20
+(1 row)
+
+ build_day 
+-----------
+        21
+(1 row)
+

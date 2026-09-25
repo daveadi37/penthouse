@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 /* ============================================================
    Concatenates the migrations and the seed into one file, so the
    database can be built with a single paste into the Supabase SQL
-   editor rather than seventeen.
+   editor rather than one file at a time.
 
    The migrations remain the source of truth. This output is generated,
    is never edited by hand, and exists only for the dashboard route —
@@ -27,7 +27,7 @@ const header = `-- ============================================================
 --
 --  ${files.length} migrations and seed.sql, concatenated in filename order, so
 --  the database can be built with one paste into the Supabase SQL
---  editor instead of seventeen.
+--  editor instead of one file at a time.
 --
 --  Regenerate with:  npm run sql:bundle
 --  Source of truth:  supabase/migrations/ and supabase/seed.sql

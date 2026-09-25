@@ -1,9 +1,9 @@
 -- ============================================================
 --  GENERATED FILE — DO NOT EDIT.
 --
---  16 migrations and seed.sql, concatenated in filename order, so
+--  17 migrations and seed.sql, concatenated in filename order, so
 --  the database can be built with one paste into the Supabase SQL
---  editor instead of seventeen.
+--  editor instead of one file at a time.
 --
 --  Regenerate with:  npm run sql:bundle
 --  Source of truth:  supabase/migrations/ and supabase/seed.sql
@@ -43,9 +43,9 @@
 -- this schema. Without pgcrypto the very next migration fails.
 create extension if not exists pgcrypto;
 
--- The running sheet has to be posted to the 3808 Home group by 09:00,
--- so the sheet reminder, the late flag, the day builder and the expiry
--- sweeps all run on a clock rather than on someone opening the app.
+-- The day builder, the expiry sweeps and the low-stock sweep all have
+-- to run on a clock rather than on somebody opening the app — the work
+-- for tomorrow is built at 05:00 Dubai whether or not anyone is awake.
 -- pg_cron is what holds that clock.
 create extension if not exists pg_cron;
 
@@ -85,10 +85,10 @@ comment on function touch_updated_at() is
 -- ============================================================
 -- The fixed vocabularies.
 --
--- Every closed union in src/types/index.ts and src/types/prayer.ts
--- becomes a Postgres enum here. The point is that the database refuses
--- a value the app could never have produced — a sheet cannot be
--- 'sent', an issue cannot be 'pending', a break is served or it is not.
+-- Every closed union in src/types/index.ts becomes a Postgres enum
+-- here. The point is that the database refuses a value the app could
+-- never have produced — an issue cannot be 'pending', a meal is
+-- approved or it is not, a break is served or it is not.
 --
 -- Two conventions, both deliberate:
 --
@@ -122,7 +122,6 @@ create type staff_role as enum (
   'housekeeping',
   'cooking',
   'cook',
-  'priestcare',
   'driver',
   'maintenance',
   'any'
@@ -137,10 +136,6 @@ create type capability as enum (
   'day.tick',
   'day.assign',
   'library.edit',
-  'sheet.view',
-  'sheet.edit',
-  'sheet.check',
-  'sheet.post',
   'issue.raise',
   'issue.viewAll',
   'issue.manage',
@@ -159,8 +154,8 @@ create type capability as enum (
   'people.manage',
   'occasions.view',
   'occasions.edit',
-  'shrine.view',
-  'shrine.log',
+  'chat.view',
+  'chat.post',
   'documents.view',
   'documents.viewOwner',
   'settings.edit',
@@ -176,8 +171,6 @@ create type area_type as enum (
   'bathroom',
   'kitchen',
   'living',
-  'shrine',
-  'prayer',
   'utility',
   'storage',
   'outdoor',
@@ -481,24 +474,6 @@ create type notif_kind as enum (
 -- work in practice, but they do mute reminders.
 create type notif_class as enum ('assigned', 'reminder', 'escalation', 'response');
 
--- ---------- the running sheet ----------
-
--- 'draft' while it is being filled in, 'checked' once Earl has read
--- it, 'posted' once it has gone to the group. The step from checked to
--- posted is the one the footer rule guards.
-create type sheet_status as enum ('draft', 'checked', 'posted');
-
--- The shopping list's in-stock column. 'unknown' is the honest default
--- — nobody has looked yet — and is not the same as 'no'.
-create type stock_state as enum ('yes', 'no', 'partial', 'unknown');
-
-create type divo_action as enum ('lit', 'topped', 'checked', 'extinguished');
-
-create type oil_level as enum ('full', 'half', 'low', 'empty');
-
--- The two photographs that go on the group each night.
-create type sheet_photo_kind as enum ('setup', 'clearup');
-
 -- ============================================================
 -- 20260828000300_identity_premises.sql
 -- ============================================================
@@ -512,11 +487,10 @@ create type sheet_photo_kind as enum ('setup', 'clearup');
 -- 20260828001400_rls.sql calls, so 'what may this person do' is asked
 -- and answered in exactly one place.
 --
--- profiles is every person the app knows — Rosie, Reza, Marvin, the two
--- cooks, Earl, Aditya, Shrien, Salyna, the household and the priests.
--- areas is the rooms of apartment 3808. settings is one row, and it
--- carries the lines printed on the running sheet: the address, the
--- WhatsApp group, the 09:00 post-by time and Earl's name.
+-- profiles is every person the app knows — Marvin, Rosie, Earl, Aditya,
+-- Shrien, Salyna and Charlie. areas is the rooms of apartment 3808.
+-- settings is one row, and it carries the house identity: the address,
+-- the currency, the working week and the meal times.
 --
 -- Three conventions that hold for the whole schema and are stated once
 -- here rather than repeated in every file:
@@ -549,9 +523,8 @@ create table roles (
   -- what stops whoever holds roles.manage from promoting themselves.
   rank smallint not null,
   description text not null default '',
-  -- People in this role do the work: tasks route to them, they appear on
-  -- the rota and on the running sheet. An owner who also cooks is still
-  -- not staff.
+  -- People in this role do the work: tasks route to them and they appear
+  -- on the rota. An owner who also cooks is still not staff.
   works boolean not null default false,
   -- Seeded roles cannot be deleted, because the seed data and the
   -- policies below both name them. Their capabilities stay editable.
@@ -589,15 +562,20 @@ create index role_capabilities_cap_idx on role_capabilities (capability);
 
 -- Text primary key, not uuid. The app hardcodes these ids: the store
 -- defaults to 'p-earl', Cooking.tsx routes meal approvals to Earl by id,
--- and the laundry rota names 'p-rosie', 'p-reza' and 'p-marvin'
--- directly. Those are not seed rows that can be regenerated — they are
--- constants in the source, so the id has to survive a rebuild.
+-- and the laundry rota names 'p-rosie' and 'p-marvin' directly. Those
+-- are not seed rows that can be regenerated — they are constants in the
+-- source, so the id has to survive a rebuild.
 create table profiles (
   id text primary key,
   -- Links a profile to a Supabase auth user. Making a row here does not
   -- create a way to sign in; the invite does, and this column is what
-  -- joins the two. Null for the priests and for anyone who never logs in.
-  auth_user_id uuid unique,
+  -- joins the two. Null for anyone who never logs in.
+  --
+  -- The foreign key matters more than it looks: has_capability() matches
+  -- on this column, so a deleted auth user that left its uuid behind
+  -- here would go on granting powers to whichever account Supabase
+  -- issued that uuid to next. SET NULL severs the profile instead.
+  auth_user_id uuid unique references auth.users (id) on delete set null,
   name text not null,
   -- A reference, not an enum. RESTRICT rather than CASCADE: deleting a
   -- role that somebody still holds should fail loudly, not silently
@@ -608,9 +586,13 @@ create table profiles (
   email text not null default '',
   phone text not null default '',
   initials text not null,
+  -- What this person eats, in the words the cook reads. Empty means no
+  -- restriction. Free text and not an enum: a diet is a sentence, and
+  -- the moment it is a closed list somebody's allergy has nowhere to go.
+  diet text not null default '',
   active boolean not null default true,
-  -- Whether this person has a login at all. The two cooks and the
-  -- priests are on every sheet and never open the app.
+  -- Whether this person has a login at all. Rosie and Marvin are on the
+  -- rota whether or not they ever open the app.
   can_sign_in boolean not null default false,
   -- Household members appear in the laundry rota and the meal portions.
   is_household_member boolean not null default false,
@@ -618,11 +600,12 @@ create table profiles (
   updated_at timestamptz not null default now()
 );
 
-comment on table profiles is 'Every person the app knows — the staff, the two cooks, Earl, Aditya, Shrien, Salyna, the household and the priests. Deactivated, never deleted.';
-comment on column profiles.id is 'Stable text id. Hardcoded in the app source (p-earl, p-rosie, p-reza, p-marvin), so it must not be regenerated.';
+comment on table profiles is 'Every person the app knows — Marvin and Rosie, Earl, Aditya, Shrien and the household. Deactivated, never deleted.';
+comment on column profiles.id is 'Stable text id. Hardcoded in the app source (p-earl, p-rosie, p-marvin), so it must not be regenerated.';
 comment on column profiles.auth_user_id is 'The Supabase auth user this profile signs in as. Null for people with no login. Set by the admin-users Edge Function, never from the browser.';
 comment on column profiles.staff_roles is 'What this person is for. Drives auto-routing of work. Empty for anyone whose role is not marked works.';
-comment on column profiles.can_sign_in is 'Whether a login exists or is intended. False for the cooks and the priests.';
+comment on column profiles.diet is 'What this person eats, read by the cook when portions are worked out. Empty means no restriction.';
+comment on column profiles.can_sign_in is 'Whether a login exists or is intended. False for anyone who is on the rota but never opens the app.';
 comment on column profiles.initials is 'Two letters, shown on the avatar chip where there is no room for a name.';
 
 create index profiles_role_idx on profiles (role) where active;
@@ -635,9 +618,8 @@ create trigger profiles_touch before update on profiles
 -- ---------- areas ----------
 
 -- Text primary key for the same reason as profiles: library tasks are
--- written against 'a-sh1' (the shrine) and 'a-pr1' (the prayer area),
--- and the seeded library would have to be rewritten if these were
--- regenerated on every rebuild.
+-- written against particular rooms by id, and the seeded library would
+-- have to be rewritten if these were regenerated on every rebuild.
 create table areas (
   id text primary key,
   name text not null,
@@ -663,8 +645,8 @@ create table areas (
   constraint areas_parity_binary check (parity in (0, 1))
 );
 
-comment on table areas is 'The rooms of apartment 3808. The shrine and the prayer area are areas like any other, so work can be scheduled against them.';
-comment on column areas.id is 'Stable text id. The seeded task library references a-sh1 and a-pr1 by name.';
+comment on table areas is 'The rooms of apartment 3808. Every room is an area, so work can be scheduled against any of them.';
+comment on column areas.id is 'Stable text id. The seeded task library references areas by name.';
 comment on column areas.deep_freq is '0 = not on a deep-clean cycle, 7 = weekly, 14 = fortnightly, 30 = monthly.';
 comment on column areas.parity is 'Which half of the fortnight a fortnightly room falls in. Counted from settings.parity_epoch.';
 comment on column areas.use_level is 'High-use bathrooms get an extra midday pass. Null for normal use.';
@@ -684,14 +666,9 @@ create trigger areas_touch before update on areas
 create table settings (
   id boolean primary key default true,
   house text not null,
-  -- Printed at the top of every running sheet.
+  -- Where the house is. Printed on anything that leaves the app, and
+  -- what a delivery driver is given.
   address text not null,
-  -- Where the sheet is posted each morning.
-  whatsapp_group text not null,
-  -- The sheet is late after this. The documents say 09:00.
-  sheet_post_by time not null default '09:00',
-  -- Fixed on the printed sheet. Earl checks it before it goes out.
-  checked_by_name text not null,
   currency text not null default 'AED',
   locale text not null default 'en-GB',
   -- Meal name to serve time, e.g. {"Dinner": "20:30"}. A map rather than
@@ -699,16 +676,11 @@ create table settings (
   -- queried across.
   meal_times jsonb not null default '{}'::jsonb,
   portion_default smallint not null default 4,
-  -- The working week: which days the cooks and the deliveries keep to,
-  -- and the window on those days. The prayers keep to none of it, which
-  -- is why the sheet runs seven days a week.
+  -- The working week: which days the staff and the deliveries keep to,
+  -- and the window on those days.
   working_days smallint[] not null default '{}',
   working_start time not null default '09:00',
   working_end time not null default '18:00',
-  -- The observance that owns the running sheet. Outside these dates the
-  -- app opens on Today instead, and the food rule stops biting.
-  observance_from date,
-  observance_to date,
   -- How many days ahead a visa, warranty or contract expiry starts warning.
   alert_lead_days smallint not null default 30,
   -- The named stages a load moves through. Ordered.
@@ -724,17 +696,14 @@ create table settings (
   updated_at timestamptz not null default now(),
   constraint settings_single_row check (id),
   constraint settings_plan_window check (plan_end > plan_start),
-  constraint settings_working_window check (working_end > working_start),
-  constraint settings_observance_order check (observance_to is null or observance_from is null or observance_to >= observance_from)
+  constraint settings_working_window check (working_end > working_start)
 );
 
-comment on table settings is 'One row. Carries the house identity and the lines printed on the running sheet — the address, the 3808 Home group, the 09:00 post-by time and Earl''s name.';
+comment on table settings is 'One row. Carries the house identity — the address, the currency, the working week, the meal times and the day-plan window.';
 comment on column settings.id is 'Always true. The check constraint is what makes this table a singleton.';
-comment on column settings.sheet_post_by is 'The sheet is late after this time. R4 in the spec.';
-comment on column settings.checked_by_name is 'A name, not a profile id, because it is a printed line on the page.';
+comment on column settings.address is 'Apartment 3808, Goldcrest Views 1, Jumeirah Lakes Towers, Dubai. What a delivery or a vendor is given.';
 comment on column settings.meal_times is 'Meal name to serve time. Read whole, never queried across, so a map and not a table.';
 comment on column settings.parity_epoch is 'Day zero for fortnightly parity. Move it and every fortnightly room flips.';
-comment on column settings.observance_from is 'First day of the observance. The running sheet is the front of the app between these dates and a record outside them.';
 
 create trigger settings_touch before update on settings
   for each row execute function touch_updated_at();
@@ -925,8 +894,8 @@ create table task_instances (
   id uuid primary key default gen_random_uuid(),
   date date not null,
   -- Set null, not cascade. A library task can be retired or rewritten
-  -- at any time; the record that someone cleaned the shrine on the 9th
-  -- day of the Prayer must survive that.
+  -- at any time; the record that someone cleaned a particular room on a
+  -- particular morning must survive that.
   library_id text references library_tasks (id) on delete set null,
   category_id text not null references task_categories (id) on delete restrict,
   title text not null,
@@ -1072,7 +1041,7 @@ create table shifts (
   constraint shifts_day_off_range check (day_off between 0 and 6)
 );
 
-comment on table shifts is 'The standing pattern — which days, which hours, which day off. Reza is 14:00 to 22:00; Jagdishbhai is 15:00 to 17:00.';
+comment on table shifts is 'The standing pattern — which days, which hours, which day off. Rosie is 07:00 to 19:00 with Monday off; Marvin is 08:00 to 18:00 with Wednesday off.';
 comment on column shifts.staff_id is 'Cascades: a shift pattern is part of the person''s setup and has no life without them.';
 comment on column shifts.days is 'Days of week worked, 0 = Sunday.';
 comment on column shifts.end_time is 'May be earlier than start_time for a shift that crosses midnight, so no window check here.';
@@ -1122,385 +1091,13 @@ create table coverage_rules (
   constraint coverage_rules_zone_allowed check (zone in ('household', 'any'))
 );
 
-comment on table coverage_rules is 'Who picks up a role when its holder is off. The cook''s work falls to Rosie; the priests'' care falls to Earl.';
+comment on table coverage_rules is 'Who picks up a role when its holder is off. Rosie''s work falls to Marvin; the driving falls to Earl, because nobody else in the house drives.';
 comment on column coverage_rules.cover_staff_id is 'Restrict on delete: a rule pointing at nobody is a coverage gap that nothing would flag.';
 
 create index coverage_rules_role_idx on coverage_rules (role);
 create index coverage_rules_cover_idx on coverage_rules (cover_staff_id);
 
 create trigger coverage_rules_touch before update on coverage_rules
-  for each row execute function touch_updated_at();
-
--- ============================================================
--- 20260828000500_running_sheet.sql
--- ============================================================
-
--- ============================================================
--- The daily prayer running sheet. The spine of the product.
---
--- One printed page per date, posted to the 3808 Home WhatsApp group by
--- 09:00. It carries six sections — who is working, the order of the day,
--- the menu, the shopping list, the guests, and thirty-one checks in four
--- groups — plus what happens while the prayers run: the breaks where
--- water goes round, the guest toilet every twenty minutes, and the two
--- photographs that go on the group at the end of the night.
---
--- The six repeating sections are child tables, not jsonb. They are edited
--- row by row by different people during the day, they are ticked
--- individually with a name and a time against each tick, and the whole
--- point of the sheet is that you can ask who did what. None of that
--- survives being a blob.
---
--- The one constraint that matters most is at the bottom of the
--- running_sheets definition. The documents state it more emphatically
--- than anything else on the page:
---
---   "Never send this sheet out with the prayer start time or the number
---    of meals left blank."
---
--- So the database refuses it, not just the form.
--- ============================================================
-
-
--- ---------- the sheet ----------
-
-create table running_sheets (
-  id uuid primary key default gen_random_uuid(),
-  -- Unique. There is one sheet per day and the app stores them keyed by
-  -- date; two sheets for the same date would mean two different answers
-  -- to what is happening today.
-  date date not null unique,
-  -- The header line as printed — '9th day of the Prayer'.
-  occasion text not null default '',
-  -- Which day of the observance this is, where one is running.
-  occasion_day_no smallint,
-  -- Number of meals to lay. Blank blocks posting.
-  meals smallint,
-  guests smallint,
-  -- Blank blocks posting.
-  prayers_start time,
-  -- Planned finish, as printed on the sheet.
-  prayers_end time,
-  -- When they actually finished. This is the figure Marvin needs so the
-  -- breads are timed right, and it is not the same as the planned end.
-  actual_prayers_end time,
-  -- 'Dinner' on the 21 August sheet; the blank template says only 'Menu'.
-  sitting text not null default '',
-  status sheet_status not null default 'draft',
-  -- Names, not profile ids. These two are printed lines on the page, and
-  -- the person who prepared it is sometimes not an account holder.
-  prepared_by text,
-  prepared_at timestamptz,
-  checked_by text,
-  checked_at timestamptz,
-  posted_at timestamptz,
-  notes text not null default '',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-
-  -- The footer rule, enforced. A sheet cannot reach 'posted' with the
-  -- prayer start time or the meals count blank. Meals must also be above
-  -- zero: the app treats 0 as blank, and a sheet claiming no meals on a
-  -- prayer day is a data-entry slip, not a fact.
-  constraint running_sheets_posted_needs_start_and_meals check (
-    status <> 'posted'
-    or (prayers_start is not null and meals is not null and meals > 0)
-  ),
-  -- A posted sheet has to say who prepared it. R23.
-  constraint running_sheets_posted_needs_preparer check (
-    status <> 'posted' or coalesce(prepared_by, '') <> ''
-  ),
-  constraint running_sheets_meals_sane check (meals is null or meals >= 0),
-  constraint running_sheets_guests_sane check (guests is null or guests >= 0),
-  constraint running_sheets_day_no_sane check (occasion_day_no is null or occasion_day_no > 0)
-);
-
-comment on table running_sheets is 'One running sheet per date. The header bar, the status, and the prepared-by and checked-by lines. Its six sections are the child tables below.';
-comment on column running_sheets.date is 'Unique. One sheet per day, keyed by date exactly as the app stores it.';
-comment on column running_sheets.occasion is 'The printed occasion line, e.g. ''9th day of the Prayer''.';
-comment on column running_sheets.occasion_day_no is 'Day number within a multi-day observance. Null outside one.';
-comment on column running_sheets.meals is 'Meals to lay. Null blocks posting — see running_sheets_posted_needs_start_and_meals.';
-comment on column running_sheets.prayers_start is 'Null blocks posting. The documents are emphatic about this one.';
-comment on column running_sheets.actual_prayers_end is 'When the prayers really finished, passed to Marvin so the breads are timed right. R22.';
-comment on column running_sheets.sitting is 'Which sitting the menu is for — ''Dinner'' on the completed example.';
-comment on column running_sheets.prepared_by is 'A name, not a profile id. It is a printed line, and whoever prepared it may not hold an account.';
-comment on column running_sheets.checked_by is 'A name, not a profile id. Earl Tiongco on every sheet.';
-
-create index running_sheets_date_idx on running_sheets (date);
-create index running_sheets_status_idx on running_sheets (status);
-create index running_sheets_unposted_idx on running_sheets (date) where status <> 'posted';
-
-create trigger running_sheets_touch before update on running_sheets
-  for each row execute function touch_updated_at();
-
-
--- ---------- section 1: who is working today ----------
-
-create table sheet_roster_rows (
-  id uuid primary key default gen_random_uuid(),
-  sheet_id uuid not null references running_sheets (id) on delete cascade,
-  -- Set where the row is a real account. Blank for the Priests and for
-  -- one-off helpers, which is why the name below is stored as well.
-  person_id text references profiles (id) on delete set null,
-  who text not null,
-  job text not null default '',
-  -- Free text, because the real sheet writes 'Lives in — on duty until
-  -- close-down', 'As directed' and '—' as often as it writes clock hours.
-  hours text not null default '',
-  duties text not null default '',
-  sort_order integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-comment on table sheet_roster_rows is 'Section 1. Who is working today, their job, their hours and what they do — in the words printed on the page.';
-comment on column sheet_roster_rows.person_id is 'The account, where there is one. Null for the Priests and one-off helpers; `who` always carries the name.';
-comment on column sheet_roster_rows.hours is 'Free text. ''Lives in — on duty until close-down'' is a valid value.';
-
-create index sheet_roster_rows_sheet_idx on sheet_roster_rows (sheet_id, sort_order);
-create index sheet_roster_rows_person_idx on sheet_roster_rows (person_id);
-
-create trigger sheet_roster_rows_touch before update on sheet_roster_rows
-  for each row execute function touch_updated_at();
-
-
--- ---------- section 2: order of the day ----------
-
-create table sheet_order_rows (
-  id uuid primary key default gen_random_uuid(),
-  sheet_id uuid not null references running_sheets (id) on delete cascade,
-  -- Often not a clock time at all. 'Morning', 'By 15:45', 'During
-  -- prayers', 'Straight after aarti', 'After the meal' and 'Before bed'
-  -- are all real values off the source document.
-  time_label text not null,
-  -- Optional clock time, used only to place the row on a timeline.
-  sort_at time,
-  what text not null,
-  -- Free text. The sheet writes 'Reza / Aditya / Earl / Rosie'.
-  who text not null default '',
-  sort_order integer not null default 0,
-  done boolean not null default false,
-  done_by text references profiles (id) on delete set null,
-  done_at timestamptz,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint sheet_order_rows_done_attributed check (
-    done = false or (done_by is not null and done_at is not null)
-  )
-);
-
-comment on table sheet_order_rows is 'Section 2. The order of the day, from Marvin''s morning shop to the divo check before bed.';
-comment on column sheet_order_rows.time_label is 'What is printed in the Time column. Not always a clock time.';
-comment on column sheet_order_rows.sort_at is 'Optional clock time for ordering only. Null for ''Morning'', ''During prayers'' and the like.';
-
-create index sheet_order_rows_sheet_idx on sheet_order_rows (sheet_id, sort_order);
-create index sheet_order_rows_done_by_idx on sheet_order_rows (done_by);
-
-create trigger sheet_order_rows_touch before update on sheet_order_rows
-  for each row execute function touch_updated_at();
-
-
--- ---------- section 3: menu ----------
-
-create table sheet_menu_rows (
-  id uuid primary key default gen_random_uuid(),
-  sheet_id uuid not null references running_sheets (id) on delete cascade,
-  dish text not null default '',
-  who_makes text not null default '',
-  -- Free text, and blank as often as not on the source sheet.
-  how_many text not null default '',
-  notes text not null default '',
-  sort_order integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-comment on table sheet_menu_rows is 'Section 3. Dish, who makes it, how many, notes. The blank template lays six empty rows and they are real rows, so dish may be empty.';
-comment on column sheet_menu_rows.how_many is 'Free text, not a number. The source sheet leaves it blank more often than it fills it.';
-
-create index sheet_menu_rows_sheet_idx on sheet_menu_rows (sheet_id, sort_order);
-
-create trigger sheet_menu_rows_touch before update on sheet_menu_rows
-  for each row execute function touch_updated_at();
-
-
--- ---------- section 4: shopping list ----------
-
-create table sheet_shopping_rows (
-  id uuid primary key default gen_random_uuid(),
-  sheet_id uuid not null references running_sheets (id) on delete cascade,
-  item text not null default '',
-  -- Multi-line on the real sheet — '2L low-fat fresh milk' on one line,
-  -- '1kg yoghurt' on the next.
-  how_much text not null default '',
-  inStock stock_state not null default 'unknown',
-  who_buys text not null default '',
-  notes text,
-  sort_order integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-comment on table sheet_shopping_rows is 'Section 4. The standing rows carry over every day: the daily milk and yoghurt, the divo oil kept two spare, and the flowers, incense, matches and wicks.';
-comment on column sheet_shopping_rows.how_much is 'May contain newlines. The source cell holds two quantities on two lines.';
-comment on column sheet_shopping_rows."instock" is 'Whether it is in stock. ''unknown'' means nobody has looked, which is not the same as ''no''.';
-
-create index sheet_shopping_rows_sheet_idx on sheet_shopping_rows (sheet_id, sort_order);
-create index sheet_shopping_rows_short_idx on sheet_shopping_rows (sheet_id) where inStock <> 'yes';
-
-create trigger sheet_shopping_rows_touch before update on sheet_shopping_rows
-  for each row execute function touch_updated_at();
-
-
--- ---------- section 5: guests ----------
-
-create table sheet_guest_rows (
-  id uuid primary key default gen_random_uuid(),
-  sheet_id uuid not null references running_sheets (id) on delete cascade,
-  name text not null default '',
-  -- Free text. The source sheet uses '-' when nobody knows yet.
-  arriving text not null default '',
-  -- What they cannot eat, and where they sit.
-  notes text not null default '',
-  sort_order integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-comment on table sheet_guest_rows is 'Section 5. Who is coming, when, and what they cannot eat. Separate from the occasions `guests` table, which is for people staying in the house.';
-comment on column sheet_guest_rows.arriving is 'Free text. ''-'' is what the source sheet writes when the time is not known.';
-comment on column sheet_guest_rows.notes is 'Food they cannot eat, and seating. Mama prefers sugar-free tea.';
-
-create index sheet_guest_rows_sheet_idx on sheet_guest_rows (sheet_id, sort_order);
-
-create trigger sheet_guest_rows_touch before update on sheet_guest_rows
-  for each row execute function touch_updated_at();
-
-
--- ---------- section 6: the thirty-one daily checks ----------
-
-create table sheet_check_groups (
-  id uuid primary key default gen_random_uuid(),
-  sheet_id uuid not null references running_sheets (id) on delete cascade,
-  title text not null,
-  sort_order integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-comment on table sheet_check_groups is 'Four groups on every sheet: SHRINE before prayers, PRAYER SET-UP finished by 15:45, THE HOUSE before the first guest, AFTER THE MEAL close-down.';
-comment on column sheet_check_groups.title is 'The heading as printed, including the timing clause after the dash.';
-
-create index sheet_check_groups_sheet_idx on sheet_check_groups (sheet_id, sort_order);
-
-create trigger sheet_check_groups_touch before update on sheet_check_groups
-  for each row execute function touch_updated_at();
-
-
-create table sheet_check_items (
-  id uuid primary key default gen_random_uuid(),
-  group_id uuid not null references sheet_check_groups (id) on delete cascade,
-  text text not null,
-  done boolean not null default false,
-  done_by text references profiles (id) on delete set null,
-  done_at timestamptz,
-  sort_order integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  -- R14: tickable, with who ticked and when. A tick with no name against
-  -- it tells nobody anything the morning after.
-  constraint sheet_check_items_done_attributed check (
-    done = false or (done_by is not null and done_at is not null)
-  )
-);
-
-comment on table sheet_check_items is 'Seven shrine checks, eight prayer set-up, seven house, nine close-down. Thirty-one in all, in the exact order the documents give them.';
-comment on column sheet_check_items.text is 'The check as written, e.g. ''Divo lit and topped up — correct oil only''.';
-comment on column sheet_check_items.done_by is 'Who ticked it. Required once done is true.';
-
-create index sheet_check_items_group_idx on sheet_check_items (group_id, sort_order);
-create index sheet_check_items_done_by_idx on sheet_check_items (done_by);
-create index sheet_check_items_outstanding_idx on sheet_check_items (group_id) where not done;
-
-create trigger sheet_check_items_touch before update on sheet_check_items
-  for each row execute function touch_updated_at();
-
-
--- ---------- what happens while the prayers run ----------
-
-create table prayer_breaks (
-  id uuid primary key default gen_random_uuid(),
-  sheet_id uuid not null references running_sheets (id) on delete cascade,
-  started_at timestamptz not null default now(),
-  ended_at timestamptz,
-  -- R15. Water goes round at every break, without exception, so this is
-  -- recorded rather than assumed.
-  water_served boolean not null default false,
-  served_by text references profiles (id) on delete set null,
-  notes text,
-  sort_order integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint prayer_breaks_window check (ended_at is null or ended_at >= started_at)
-);
-
-comment on table prayer_breaks is 'Two or three each day. The prayers run 16:00 to about 19:30 and break in the middle; water is served to everyone at every break.';
-comment on column prayer_breaks.water_served is 'R15. Recorded, not assumed — the documents make it a rule for every break.';
-comment on column prayer_breaks.ended_at is 'Null while the break is still running.';
-
-create index prayer_breaks_sheet_idx on prayer_breaks (sheet_id, started_at);
-create index prayer_breaks_served_by_idx on prayer_breaks (served_by);
-
-create trigger prayer_breaks_touch before update on prayer_breaks
-  for each row execute function touch_updated_at();
-
-
--- Append-only: a reading taken at a moment, never revised. No
--- updated_at, and no trigger.
-create table toilet_checks (
-  id uuid primary key default gen_random_uuid(),
-  sheet_id uuid not null references running_sheets (id) on delete cascade,
-  at timestamptz not null default now(),
-  -- Restrict: the value of the record is that it names who looked.
-  by_id text not null references profiles (id) on delete restrict,
-  clean boolean not null default true,
-  restocked boolean not null default false,
-  notes text,
-  created_at timestamptz not null default now()
-);
-
-comment on table toilet_checks is 'R16. The guest toilet, checked and restocked every twenty minutes while the prayers run. Append-only — a reading is not revised.';
-comment on column toilet_checks.by_id is 'Who looked. Restrict on delete, because an unattributed check is worthless.';
-comment on column toilet_checks.restocked is 'Whether toilet paper was actually put out, as distinct from whether the room was clean.';
-
-create index toilet_checks_sheet_idx on toilet_checks (sheet_id, at);
-create index toilet_checks_by_idx on toilet_checks (by_id);
-
-
-create table sheet_photos (
-  id uuid primary key default gen_random_uuid(),
-  sheet_id uuid not null references running_sheets (id) on delete cascade,
-  kind sheet_photo_kind not null,
-  -- Storage path in the files bucket. May be empty: on the seeded
-  -- history the photographs only ever existed in the WhatsApp group.
-  path text not null default '',
-  at timestamptz not null default now(),
-  by_id text not null references profiles (id) on delete restrict,
-  -- R18. The photograph existing is not the point; it being on the group
-  -- is the point.
-  posted_to_group boolean not null default false,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-comment on table sheet_photos is 'R18. The set-up and clear-up photographs that go on the 3808 Home group before bed.';
-comment on column sheet_photos.path is 'Storage path. Empty where the photograph only ever lived in the WhatsApp group.';
-comment on column sheet_photos.posted_to_group is 'Whether it actually reached the group. That is the requirement, not the file existing.';
-
-create index sheet_photos_sheet_idx on sheet_photos (sheet_id, kind);
-create index sheet_photos_by_idx on sheet_photos (by_id);
-
-create trigger sheet_photos_touch before update on sheet_photos
   for each row execute function touch_updated_at();
 
 -- ============================================================
@@ -1511,9 +1108,9 @@ create trigger sheet_photos_touch before update on sheet_photos
 -- Issues, and the incident log.
 --
 -- One table, not four. A fault ("the tap drips"), a condition flag
--- ("the shrine cloth is fraying"), a request ("can we have a second
--- kettle") and a supply request ("we are out of divo oil") are the same
--- object with a different `kind`: something is wrong or wanted,
+-- ("the hallway rug is fraying"), a request ("can we have a second
+-- kettle") and a supply request ("we are out of washing powder") are
+-- the same object with a different `kind`: something is wrong or wanted,
 -- somebody said so, somebody has to decide, and it moves through the
 -- same seven statuses. Four tables would mean four status flows, four
 -- notification paths and four screens that drift apart.
@@ -1678,27 +1275,20 @@ create index incident_photos_incident_idx on incident_photos (incident_id);
 -- ============================================================
 
 -- ============================================================
--- Stock, shopping, meals and waste.
+-- Stock, shopping, meals and waste. The heart of the app.
 --
--- Two flags on inventory carry rules from the running sheet that exist
--- nowhere else in the schema, and both of them matter more than they
--- look:
+-- The shape that matters is stock and shopping being two tables and not
+-- one. inventory_items is what the house has; shopping_items is what
+-- somebody is going to buy. A line can exist on the buy list without
+-- being tracked stock — Rosie writes "coriander" and it is a line —
+-- and a tracked item can fall below its minimum without anybody having
+-- written anything, which is what sweep_stock in
+-- 20260828001500_functions_cron.sql exists to catch.
 --
---   prayer_item — brought for prayer, marked on the lid, and never used
---   for consumption. A prayer-marked litre of milk is not a litre of
---   milk you have. If a container is not marked, the sheet says treat
---   it as prayer stock and ask.
---
---   shrine_only — the shrine cloth and the shrine sponge. The cloth
---   never meets a spray or a chemical; the sponge never meets meat or
---   the normal washing-up. If either cannot be found, the instruction
---   is to say so and wait, not to substitute.
---
--- meals carries the food rule. During the observance nothing on the
--- menu may contain meat, fish or eggs, and that is checked in the app
--- before a meal can be approved (src/lib/foodrule.ts). It is not
--- checked here, because the rule has dates and this table does not know
--- them — see the approval trigger at the foot of this file, which does.
+-- inventory_movements is append-only and inventory_items.qty is a cache
+-- of it. Two people counting the same shelf on two phones produce two
+-- rows and both are kept; a single qty column reconciled by last-write
+-- would quietly lose one.
 -- ============================================================
 
 
@@ -1735,28 +1325,18 @@ create table inventory_items (
   recurring boolean not null default false,
   vendor_id uuid,
   notes text not null default '',
-  -- R6. Brought for prayer, marked, and never used for consumption.
-  prayer_item boolean not null default false,
-  -- R7. The shrine cloth and the shrine sponge. Never meat, never chemicals.
-  shrine_only boolean not null default false,
   active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint inventory_qty_not_negative check (qty >= 0),
-  constraint inventory_min_not_negative check (min_qty >= 0),
-  -- Nothing is both brought for prayer and a shrine cleaning item. One
-  -- is consumed and set aside; the other is equipment.
-  constraint inventory_flags_exclusive check (not (prayer_item and shrine_only))
+  constraint inventory_min_not_negative check (min_qty >= 0)
 );
 
-comment on table inventory_items is 'Everything counted. Two flags carry rules from the running sheet: prayer_item and shrine_only.';
-comment on column inventory_items.prayer_item is 'R6. Marked and never used for consumption. Excluded from what counts as available.';
-comment on column inventory_items.shrine_only is 'R7. The shrine cloth and sponge. Never a spray, never meat, never substituted.';
-comment on column inventory_items.min_qty is 'Below this it lands on the shopping list. Divo oil sits at 2 for a reason — it burns down over about three days.';
+comment on table inventory_items is 'Everything counted. qty is a cache of inventory_movements; min_qty is what puts a line on the buy list without anyone having to notice.';
+comment on column inventory_items.min_qty is 'Below this it lands on the shopping list. Set it at what you want left when the next shop happens, not at zero.';
 
 create index inventory_category_idx on inventory_items (category_id) where active;
 create index inventory_low_idx on inventory_items (qty) where active;
-create index inventory_prayer_idx on inventory_items (prayer_item) where prayer_item;
 
 create trigger inventory_items_touch before update on inventory_items
   for each row execute function touch_updated_at();
@@ -1827,9 +1407,10 @@ create table shopping_items (
   cost numeric(12, 2),
   vendor_id uuid,
   notes text not null default '',
-  -- The three rows printed on every running sheet: the daily milk and
-  -- yoghurt, the divo oil, and the flowers, incense, matches and wicks.
-  -- Standing rows are never cleared off the list.
+  -- The things bought on a rhythm rather than because they ran out —
+  -- the daily milk and bread, the weekly vegetables. Marking a standing
+  -- row purchased records the run; it does not take the row off the
+  -- list, because it will be needed again tomorrow.
   standing boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -1837,8 +1418,8 @@ create table shopping_items (
     check ((status = 'purchased') = (purchased_at is not null))
 );
 
-comment on table shopping_items is 'What needs buying. The three standing rows are printed on every sheet and are never cleared.';
-comment on column shopping_items.standing is 'R12. The milk and yoghurt run, the divo oil, and the flowers, incense, matches and wicks.';
+comment on table shopping_items is 'The buy list. Lines arrive three ways: somebody adds one, an item falls below its minimum, or it is a standing row that is always there.';
+comment on column shopping_items.standing is 'Always on the list. Buying it records the run rather than clearing the row — the daily milk is needed again tomorrow.';
 
 create index shopping_status_idx on shopping_items (status) where status <> 'purchased';
 
@@ -1869,7 +1450,7 @@ create table meals (
   updated_at timestamptz not null default now(),
   constraint meals_portions_positive check (portions > 0),
   -- Approved means somebody approved it. A menu that approved itself is
-  -- how the wrong food reaches a table on a prayer day.
+  -- how the wrong food reaches a table.
   constraint meals_approval_attributed
     check (status not in ('Approved', 'Prepared', 'Completed') or approved_by is not null),
   -- Changes requested without saying what changes is not feedback.
@@ -1878,7 +1459,7 @@ create table meals (
 );
 
 comment on table meals is 'The menu, by sitting. Status is a workflow — Draft, Submitted, Approved, Prepared, Completed — and approval is attributed by constraint.';
-comment on column meals.diet is 'What must not be in it. During the observance this reads "vegetarian" and the app enforces it before approval.';
+comment on column meals.diet is 'What must not be in it, for this sitting. Aditya''s portion is vegetarian, so most dinners carry a note here.';
 
 create index meals_date_idx on meals (served_on, serve_at);
 create index meals_status_idx on meals (status) where status in ('Submitted', 'Changes requested');
@@ -1902,64 +1483,6 @@ comment on table meal_ingredients is 'What a dish needs. Checked against stock w
 
 create index meal_ingredients_meal_idx on meal_ingredients (meal_id);
 create index meal_ingredients_item_idx on meal_ingredients (item_id);
-
-
--- ---------- the food rule, in the database ----------
-
--- The app checks this before it offers the Approve button
--- (src/lib/foodrule.ts). This trigger is the second line, for the same
--- reason every capability is checked twice: a rule that only exists in
--- the interface is a rule that exists until somebody uses the API.
---
--- Deliberately narrow. It fires on approval only, not on drafting —
--- writing down a dish to think about is not the same as putting it on
--- the table, and a cook typing "no eggs" into the diet note should not
--- be fought with.
-create or replace function enforce_food_rule() returns trigger
-language plpgsql
-set search_path = public, pg_catalog
-as $$
-declare
-  banned constant text :=
-    '\y(chicken|murgh|lamb|mutton|gosht|beef|steak|veal|pork|bacon|ham|gammon|sausage|chorizo|pepperoni|salami|duck|turkey|quail|fish|salmon|tuna|cod|hamour|sardine|anchovy|prawn|shrimp|crab|lobster|squid|calamari|shellfish|egg|eggs|omelette|shakshuka|meringue|mince|keema|kofta|kebab|gelatin|gelatine)\y';
-  s settings%rowtype;
-  offending text;
-begin
-  if new.status not in ('Approved', 'Prepared', 'Completed') then
-    return new;
-  end if;
-
-  select * into s from settings limit 1;
-  if s.observance_from is null
-     or new.served_on < s.observance_from
-     or new.served_on > s.observance_to then
-    return new;
-  end if;
-
-  select string_agg(hit, ', ')
-    into offending
-    from (
-      select new.name as hit where new.name ~* banned
-      union all
-      select i.name from meal_ingredients i where i.meal_id = new.id and i.name ~* banned
-    ) t;
-
-  if offending is not null then
-    raise exception
-      'FOOD RULE — THIS IS NOT OPTIONAL. % falls inside the observance (% to %), and this menu has: %. All food is vegetarian: no meat, no fish, no eggs. Milk, cheese, yoghurt and butter are fine.',
-      new.served_on, s.observance_from, s.observance_to, offending
-      using errcode = 'check_violation';
-  end if;
-
-  return new;
-end;
-$$;
-
-comment on function enforce_food_rule() is
-  'Refuses to approve a meal containing meat, fish or eggs on a date inside the observance. The second of two checks; the first is in the app, before the button is offered.';
-
-create trigger meals_food_rule before insert or update on meals
-  for each row execute function enforce_food_rule();
 
 
 -- ---------- waste ----------
@@ -2363,7 +1886,7 @@ create table visitors (
   constraint visitors_departure_after_arrival check (departed is null or departed >= arrived)
 );
 
-comment on table visitors is 'Who came, when, and whether they left. During the prayers this is a long list, which is exactly when it matters.';
+comment on table visitors is 'Who came, when, and whether they left. The value is in the open entries — somebody signed in at nine and never signed out.';
 comment on column visitors.departed is 'Null means still on site. The screen counts those, because an open entry at midnight is the thing worth seeing.';
 
 create index visitors_open_idx on visitors (visited_on) where departed is null;
@@ -2705,9 +2228,9 @@ alter table asset_service_log
 --
 -- Every table in this file is owner-and-manager only, and the policies
 -- say so. A staff member reads their own row and nobody else's, which
--- is not a nicety — Rosie's salary, Reza's visa date and Marvin's
--- passport expiry are three of the most sensitive columns in the whole
--- database, and they sit beside a shopping list.
+-- is not a nicety — Rosie's salary, her visa date and Marvin's passport
+-- expiry are three of the most sensitive columns in the whole database,
+-- and they sit beside a shopping list.
 --
 -- The three expiry dates are why this file exists at all. A residence
 -- visa renewal takes about three weeks, a visa renewal needs six months
@@ -2762,7 +2285,7 @@ create trigger staff_details_touch before update on staff_details
 
 -- ---------- attendance ----------
 
--- Append-only. Reza is paid by the hour, so this table is the pay
+-- Append-only. Where somebody is paid by the hour this table is the pay
 -- record, and a row that can be edited quietly is a pay record nobody
 -- can rely on. Corrections are a new row with a note, not an update.
 create table attendance (
@@ -2779,7 +2302,7 @@ create table attendance (
   constraint attendance_out_after_in check (clock_out is null or clock_in is null or clock_out >= clock_in)
 );
 
-comment on table attendance is 'Hours worked. Append-only, because for Reza this is the pay record and an editable pay record is not one.';
+comment on table attendance is 'Hours worked. Append-only, because for anyone paid by the hour this is the pay record, and an editable pay record is not one.';
 comment on column attendance.source is 'manual where somebody typed it, derived where it came from the shift pattern.';
 
 create index attendance_staff_idx on attendance (staff_id, worked_on desc);
@@ -2805,12 +2328,12 @@ create table leave_requests (
   constraint leave_dates_order check (to_date >= from_date),
   constraint leave_days_positive check (days > 0),
   -- Approved by somebody, or not approved. Silent approval is how a
-  -- house ends up with nobody in it during a prayer week.
+  -- house ends up with nobody in it in a week somebody is away.
   constraint leave_approval_attributed
     check (status <> 'approved' or (approved_by is not null and approved_at is not null))
 );
 
-comment on table leave_requests is 'Time off, requested and answered. Approval is attributed by constraint — silent approval is how a prayer week ends up uncovered.';
+comment on table leave_requests is 'Time off, requested and answered. Approval is attributed by constraint — silent approval is how a week ends up uncovered.';
 
 create index leave_staff_idx on leave_requests (staff_id, from_date desc);
 create index leave_pending_idx on leave_requests (status) where status = 'requested';
@@ -2851,27 +2374,21 @@ create trigger staff_reviews_touch before update on staff_reviews
   for each row execute function touch_updated_at();
 
 -- ============================================================
--- 20260828001200_occasions_shrine.sql
+-- 20260828001200_occasions.sql
 -- ============================================================
 
 -- ============================================================
--- Guests, events, the observance, and the shrine record.
+-- Guests, events and the house standing empty.
 --
 -- Occasions all work the same way: a thing with a date, and a list of
 -- tasks positioned by an offset from it — three days before, two hours
 -- before, on the day, after. One engine, three shapes (a guest staying,
 -- an event happening, the house empty while everyone is away).
 --
--- The observance is what names every running sheet. '9th day of the
--- Prayer' is not typed in; it is computed from the start date, which is
--- why the sheet for the 21st of August says what it says. It also
--- decides two other things: whether the running sheet is the front of
--- the app or a record, and whether the food rule bites.
---
--- divo_log and shrine_checks are append-only and are the most
--- consequential small tables in the schema. The divo burns down over
--- about three days. Two spare bottles of oil, always — not one, because
--- Marvin buys it first thing and one spare is already a problem.
+-- The offset is the reason this is one engine and not three tables of
+-- dated to-dos. Move a dinner by a day and everything hung off it moves
+-- with it, which is the only version of this that survives contact with
+-- a plan that changes.
 -- ============================================================
 
 
@@ -2884,7 +2401,8 @@ create table guests (
   arrival_time time,
   departure date,
   area_id text references areas (id) on delete set null,
-  -- What they cannot eat, and where they sit. Section 5 of the sheet.
+  -- What they cannot eat. The cook reads this before the menu is written,
+  -- which is the only point at which knowing it is any use.
   dietary text not null default '',
   notes text not null default '',
   status occasion_status not null default 'planned',
@@ -2893,7 +2411,7 @@ create table guests (
   constraint guests_departure_after_arrival check (departure is null or departure >= arrival)
 );
 
-comment on table guests is 'People staying. R13 — the dietary note and the seating note are the two things the sheet asks for.';
+comment on table guests is 'People staying. The dietary note and the room are the two things anyone actually needs from this.';
 
 create index guests_arrival_idx on guests (arrival);
 create index guests_active_idx on guests (status) where status = 'active';
@@ -3021,98 +2539,6 @@ create trigger vacations_touch before update on vacations
 alter table occasion_tasks
   add constraint occasion_tasks_vacation_fk
   foreign key (vacation_id) references vacations (id) on delete cascade;
-
-
--- ---------- the observance ----------
-
-create table observances (
-  id text primary key,
-  name text not null,
-  start_date date not null,
-  end_date date not null,
-  day_count smallint not null,
-  notes text not null default '',
-  active boolean not null default true,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint observances_dates_order check (end_date >= start_date)
-);
-
-comment on table observances is 'The multi-day observance that names every running sheet. The current one runs 13 August to 11 September 2026 — thirty days.';
-comment on column observances.start_date is 'Day one. The sheet dated 21 August is headed "9th day of the Prayer", which is what fixes it at 13 August.';
-
-create trigger observances_touch before update on observances
-  for each row execute function touch_updated_at();
-
-
--- '9th day of the Prayer', computed rather than typed. Written as a
--- function because the sheet, the export and the reminder job all need
--- the same answer and must not each have their own arithmetic.
-create or replace function observance_day_no(o_id text, d date) returns smallint
-language sql
-stable
-set search_path = public, pg_catalog
-as $$
-  select case
-           when d < o.start_date or d > o.end_date then 0
-           else (d - o.start_date + 1)::smallint
-         end
-  from observances o
-  where o.id = o_id;
-$$;
-
-comment on function observance_day_no(text, date) is 'Which day of the observance a date is, or 0 outside it. One arithmetic, used by the sheet, the export and the 09:00 job alike.';
-
-
--- ---------- the divo ----------
-
--- Append-only. A reading is not revised: "it was low at 18:00" stays
--- true after somebody tops it up at 18:05, and the pair of rows is the
--- record that it was caught.
-create table divo_log (
-  id uuid primary key default gen_random_uuid(),
-  logged_at timestamptz not null default now(),
-  action divo_action not null,
-  oil_level oil_level,
-  by_id text not null references profiles (id) on delete restrict,
-  notes text not null default '',
-  created_at timestamptz not null default now()
-);
-
-comment on table divo_log is 'The divo, logged every time it is checked or topped up. Append-only: a reading is not revised, and the pair of rows is the proof it was caught.';
-comment on column divo_log.oil_level is 'Low or empty raises an alert to Earl automatically. Two spare bottles, always — the divo burns down over about three days.';
-
-create index divo_log_when_idx on divo_log (logged_at desc);
-create index divo_log_low_idx on divo_log (logged_at desc) where oil_level in ('low', 'empty');
-
-
--- ---------- the shrine, daily ----------
-
-create table shrine_checks (
-  id uuid primary key default gen_random_uuid(),
-  checked_on date not null,
-  -- The seven things checked before prayers. Stored as named booleans
-  -- rather than a generic tick table because these seven are fixed by
-  -- the sheet, and naming them means a query can ask which one slips.
-  divo_lit boolean not null default false,
-  shoes_off boolean not null default false,
-  dusted_with_shrine_cloth boolean not null default false,
-  ash_cleared boolean not null default false,
-  statues_not_moved boolean not null default false,
-  area_clear boolean not null default false,
-  supplies_two_deep boolean not null default false,
-  by_id text not null references profiles (id) on delete restrict,
-  checked_at timestamptz not null default now(),
-  notes text not null default '',
-  created_at timestamptz not null default now(),
-  unique (checked_on)
-);
-
-comment on table shrine_checks is 'The seven shrine checks, one row a day. Named columns rather than generic ticks, so "which one slips" is a query and not a report.';
-comment on column shrine_checks.supplies_two_deep is 'Matches, wicks and two spare bottles of divo oil. Two, not one.';
-comment on column shrine_checks.statues_not_moved is 'Not to dust behind, not to make room, not back again afterwards.';
-
-create index shrine_checks_date_idx on shrine_checks (checked_on desc);
 
 -- ============================================================
 -- 20260828001300_notifications_audit.sql
@@ -3377,9 +2803,6 @@ begin
     'roles', 'role_capabilities', 'profiles', 'areas', 'settings',
     'task_categories', 'library_tasks', 'task_instances', 'procedures',
     'appointments', 'shifts', 'absences', 'coverage_rules',
-    'running_sheets', 'sheet_roster_rows', 'sheet_order_rows', 'sheet_menu_rows',
-    'sheet_shopping_rows', 'sheet_guest_rows', 'sheet_check_groups',
-    'sheet_check_items', 'prayer_breaks', 'toilet_checks', 'sheet_photos',
     'issues', 'issue_photos', 'issue_comments', 'incidents', 'incident_photos',
     'inventory_categories', 'inventory_items', 'inventory_movements',
     'shopping_items', 'meals', 'meal_ingredients', 'waste_entries', 'laundry_slots',
@@ -3391,7 +2814,7 @@ begin
     'recurring_charges', 'petty_cash', 'documents', 'document_links',
     'staff_details', 'attendance', 'leave_requests', 'staff_reviews',
     'guests', 'house_events', 'occasion_tasks', 'occasion_templates',
-    'occasion_template_tasks', 'vacations', 'observances', 'divo_log', 'shrine_checks',
+    'occasion_template_tasks', 'vacations',
     'notifications', 'notification_prefs', 'push_subscriptions', 'audit_log'
   ] loop
     execute format('alter table %I enable row level security', t);
@@ -3480,25 +2903,16 @@ select grant_table('occasion_tasks', 'occasions.view', 'day.tick');
 select grant_table('occasion_templates', 'occasions.view', 'occasions.edit');
 select grant_table('occasion_template_tasks', 'occasions.view', 'occasions.edit');
 select grant_table('vacations', 'occasions.view', 'occasions.edit');
-select grant_table('observances', 'sheet.view', 'settings.edit');
 
 select grant_table('incidents', 'issue.viewAll', 'issue.raise');
 select grant_table('incident_photos', 'issue.viewAll', 'issue.raise');
 
-select grant_table('running_sheets', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_roster_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_order_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_menu_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_shopping_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_guest_rows', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_check_groups', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_check_items', 'sheet.view', 'sheet.edit');
-select grant_table('prayer_breaks', 'sheet.view', 'sheet.edit');
-select grant_table('toilet_checks', 'sheet.view', 'sheet.edit');
-select grant_table('sheet_photos', 'sheet.view', 'sheet.edit');
-
-select grant_table('divo_log', 'shrine.view', 'shrine.log');
-select grant_table('shrine_checks', 'shrine.view', 'shrine.log');
+-- The house chat is the one table whose rules are not here. It is
+-- created in 20260828001700_chat.sql, which is after this file, and a
+-- policy cannot be written for a table that does not exist yet — so its
+-- enable, its force and its grant_table call all live in that file
+-- alongside the table. grant_table() itself is defined above and is
+-- still what writes them.
 
 select grant_table('task_instances', 'day.view', 'day.tick');
 
@@ -3551,8 +2965,17 @@ create policy role_capabilities_write on role_capabilities
 -- would mean a checklist that cannot say who a task is for. What is not
 -- here is anything sensitive: pay, visas and passports are in
 -- staff_details, which is a different table with a different rule.
+-- Everybody in the house can see everybody in the house — names have to
+-- resolve on a task, a message and a shift. But `using (true)` gave the
+-- list to any authenticated account whatsoever, including one that this
+-- house has never heard of: sign up, get a JWT, read nine names, emails,
+-- phone numbers and dietary notes. Email signups are on by default, so
+-- that is anyone who finds the address.
+--
+-- Holding a profile is the line. A stranger reads nothing and lands on
+-- the "not linked yet" screen, which is what it was written for.
 create policy profiles_read on profiles
-  for select to authenticated using (true);
+  for select to authenticated using (my_profile_id() is not null);
 
 create policy profiles_insert on profiles
   for insert to authenticated
@@ -3707,8 +3130,8 @@ create policy attendance_insert on attendance
   for insert to authenticated
   with check (has_capability('people.manage') or staff_id = my_profile_id());
 
--- No update, no delete. For Reza this is the pay record, and a pay
--- record that can be quietly edited is not one.
+-- No update, no delete. For Marvin and Rosie this is the pay record,
+-- and a pay record that can be quietly edited is not one.
 
 create policy leave_read on leave_requests
   for select to authenticated
@@ -3771,11 +3194,19 @@ create policy audit_read on audit_log
   for select to authenticated using (has_capability('audit.view'));
 
 
--- ---------- 5. the shorthand does not outlive the file ----------
+-- ---------- 5. the shorthand outlives this file by two migrations ----------
 
 -- grant_table() writes policies, which means anybody who could call it
--- could write themselves a policy. It has done its work.
-drop function grant_table(text, text, text);
+-- could write themselves a policy, so it is dropped as soon as the last
+-- caller has run. That is NOT here: 20260828001700_chat.sql creates
+-- chat_messages — which cannot exist before this file, because this file
+-- is where the policy vocabulary is defined — and calls grant_table() on
+-- it. The drop lives at the foot of that file instead.
+--
+-- It was here once. Moving the chat_messages call out of this file to
+-- fix a 42P01 walked it straight past the drop and bought a 42883 in
+-- exchange, 3841 lines into a 4294-line paste. scripts/check-sql.mjs now
+-- tracks the live window of a function the same way it tracks a table's.
 
 -- ============================================================
 -- 20260828001500_functions_cron.sql
@@ -3794,9 +3225,9 @@ drop function grant_table(text, text, text);
 -- against real tasks and the checklist is never empty on a bad
 -- connection.
 --
--- The 09:00 pair are the running sheet's whole reason for existing: a
--- reminder before, a late flag after. A sheet that goes out at 09:40
--- has already missed Marvin's shopping run.
+-- The stock sweep matters most after that. It is what turns a shelf
+-- nobody thought to look at into a line on the buy list before Marvin
+-- leaves, rather than after he gets back.
 -- ============================================================
 
 
@@ -3973,164 +3404,10 @@ end;
 $$;
 
 comment on function route_to(staff_role, date, text, time) is
-  'Auto-routing. Spread deterministically across everyone qualified and on shift, so Rosie does not collect every housekeeping task while Reza shows zero.';
+  'Auto-routing. Spread deterministically across everyone qualified and on shift, so one person does not collect every housekeeping task while another shows zero.';
 
 
--- ---------- 2. open tomorrow's running sheet ----------
-
-create or replace function ensure_sheet(d date) returns uuid
-language plpgsql
-security definer
-set search_path = public, pg_catalog
-as $$
-declare
-  sheet_id uuid;
-  obs observances%rowtype;
-  n smallint;
-begin
-  select id into sheet_id from running_sheets where date = d;
-  if found then
-    return sheet_id;
-  end if;
-
-  select * into obs from observances where active and d between start_date and end_date limit 1;
-  n := case when obs.id is null then null else (d - obs.start_date + 1)::smallint end;
-
-  insert into running_sheets (date, occasion, occasion_day_no)
-  values (
-    d,
-    case
-      when obs.id is null then ''
-      else ordinal_day(n) || ' day of ' || regexp_replace(obs.name, '^The ', 'the ')
-    end,
-    n
-  )
-  returning id into sheet_id;
-
-  return sheet_id;
-end;
-$$;
-
-comment on function ensure_sheet(date) is 'Opens a blank sheet for a date, headed with the day of the observance where one is running.';
-
-
-create or replace function ordinal_day(n smallint) returns text
-language sql
-immutable
-set search_path = pg_catalog
-as $$
-  select n::text || case
-    when n % 100 between 11 and 13 then 'th'
-    when n % 10 = 1 then 'st'
-    when n % 10 = 2 then 'nd'
-    when n % 10 = 3 then 'rd'
-    else 'th'
-  end;
-$$;
-
-comment on function ordinal_day(smallint) is 'Turns 9 into 9th. Written once, because the sheet, the export and the reminder all print it.';
-
-
--- ---------- 3. the 09:00 pair ----------
-
--- Before. Whoever is preparing it, and Earl, are told the sheet is due.
-create or replace function remind_sheet_due() returns integer
-language plpgsql
-security definer
-set search_path = public, pg_catalog
-as $$
-declare
-  s settings%rowtype;
-  sheet running_sheets%rowtype;
-  sent integer := 0;
-  p record;
-begin
-  select * into s from settings limit 1;
-  select * into sheet from running_sheets where date = current_date;
-
-  if sheet.id is null or sheet.status = 'posted' then
-    return 0;
-  end if;
-
-  for p in
-    select pr.id
-    from profiles pr
-    join roles r on r.id = pr.role and r.active
-    join role_capabilities rc on rc.role_id = r.id
-    where pr.active and pr.can_sign_in and rc.capability in ('sheet.post', 'sheet.check')
-    group by pr.id
-  loop
-    if should_send_now(p.id, 'task_reminder', 'normal') then
-      insert into notifications (profile_id, kind, title, body, url, priority)
-      values (
-        p.id, 'task_reminder',
-        'Today''s running sheet is due',
-        format('It goes to the %s group by %s. %s', s.whatsapp_group, to_char(s.sheet_post_by, 'HH24:MI'),
-               case
-                 when sheet.prayers_start is null and sheet.meals is null then 'The prayer start time and the number of meals are both still blank.'
-                 when sheet.prayers_start is null then 'The prayer start time is still blank.'
-                 when sheet.meals is null then 'The number of meals is still blank.'
-                 else 'It is filled in and needs checking.'
-               end),
-        '#/sheet', 'normal'
-      );
-      sent := sent + 1;
-    end if;
-  end loop;
-
-  return sent;
-end;
-$$;
-
-comment on function remind_sheet_due() is 'The nudge before 09:00, sent to whoever can post or check the sheet. Says which field is blank, because that is the actionable part.';
-
-
--- After. The sheet is late, and the whole point of the deadline is
--- that being late is visible rather than quietly normal.
-create or replace function flag_sheet_late() returns integer
-language plpgsql
-security definer
-set search_path = public, pg_catalog
-as $$
-declare
-  s settings%rowtype;
-  sheet running_sheets%rowtype;
-  sent integer := 0;
-  p record;
-begin
-  select * into s from settings limit 1;
-  select * into sheet from running_sheets where date = current_date;
-
-  if sheet.id is null or sheet.status = 'posted' then
-    return 0;
-  end if;
-
-  perform record_audit('late', 'running_sheet', current_date::text,
-                       format('Not posted by %s', to_char(s.sheet_post_by, 'HH24:MI')));
-
-  for p in
-    select pr.id
-    from profiles pr
-    join roles r on r.id = pr.role and r.active
-    join role_capabilities rc on rc.role_id = r.id
-    where pr.active and pr.can_sign_in and rc.capability = 'sheet.check'
-    group by pr.id
-  loop
-    insert into notifications (profile_id, kind, title, body, url, priority)
-    values (p.id, 'task_reminder', 'The running sheet is late',
-            format('The %s group has not had today''s sheet. A sheet that goes out at 09:40 has already missed the shopping run.', s.whatsapp_group),
-            '#/sheet', 'high');
-    sent := sent + 1;
-  end loop;
-
-  return sent;
-end;
-$$;
-
-comment on function flag_sheet_late() is 'The flag after 09:00. High priority rather than urgent — it is late, not on fire, and urgent is reserved for what wakes people.';
-
-
--- ---------- 4. the expiry and stock sweeps ----------
+-- ---------- 2. the expiry and stock sweeps ----------
 
 create or replace function sweep_expiries() returns integer
 language plpgsql
@@ -4193,7 +3470,8 @@ $$;
 comment on function sweep_expiries() is 'The daily read of every date that expires. Warranties, services, registration, insurance, contracts and documents in one pass.';
 
 
--- Stock, and the divo in particular. Two spare bottles, always.
+-- What is running out. This is the job the buy list depends on: nobody
+-- has to notice a shelf for it to reach the list.
 create or replace function sweep_stock() returns integer
 language plpgsql
 security definer
@@ -4201,21 +3479,14 @@ set search_path = public, pg_catalog
 as $$
 declare
   low_count integer;
-  divo_low boolean;
   raised integer := 0;
   p record;
 begin
   select count(*) into low_count
   from inventory_items
-  where active and qty < min_qty and not prayer_item;
+  where active and qty < min_qty;
 
-  select exists (
-    select 1 from divo_log
-    where oil_level in ('low', 'empty')
-      and logged_at > now() - interval '24 hours'
-  ) into divo_low;
-
-  if low_count = 0 and not divo_low then
+  if low_count = 0 then
     return 0;
   end if;
 
@@ -4226,17 +3497,10 @@ begin
     where pr.active and pr.can_sign_in and rc.capability = 'inventory.edit'
     group by pr.id
   loop
-    if divo_low and should_send_now(p.id, 'stock_low', 'high') then
-      insert into notifications (profile_id, kind, title, body, url, priority)
-      values (p.id, 'stock_low', 'The divo oil is low',
-              'Logged low or empty in the last day. Two spare bottles, always — it burns down over about three days and Marvin buys it first thing.',
-              '#/inventory', 'high');
-      raised := raised + 1;
-    end if;
-    if low_count > 0 and should_send_now(p.id, 'stock_low', 'normal') then
+    if should_send_now(p.id, 'stock_low', 'normal') then
       insert into notifications (profile_id, kind, title, body, url, priority)
       values (p.id, 'stock_low', format('%s items below minimum', low_count),
-              'On the shopping list. Prayer-marked stock is excluded — it is not available to use.',
+              'They are on the buy list. Worth a look before the next shop.',
               '#/inventory', 'normal');
       raised := raised + 1;
     end if;
@@ -4246,21 +3510,74 @@ begin
 end;
 $$;
 
-comment on function sweep_stock() is 'Low stock, and the divo. Prayer-marked items are excluded from the count because they are not stock anybody may use.';
+comment on function sweep_stock() is 'Counts what has fallen below its minimum and tells whoever can act on it. The daily half of how a line reaches the buy list without anybody noticing a shelf.';
 
 
--- ---------- 5. the schedule ----------
+-- ---------- 3. the schedule ----------
 
 -- All times UTC. Dubai is UTC+4 all year — no daylight saving, so these
 -- do not drift.
-select cron.schedule('build-tomorrow',   '0 1 * * *',  $$select build_day(current_date + 1), ensure_sheet(current_date + 1)$$);  -- 05:00 Dubai
-select cron.schedule('build-today',      '30 1 * * *', $$select build_day(current_date), ensure_sheet(current_date)$$);          -- 05:30 Dubai, a safety net
-select cron.schedule('sheet-due',        '0 4 * * *',  $$select remind_sheet_due()$$);                                            -- 08:00 Dubai
-select cron.schedule('sheet-late',       '15 5 * * *', $$select flag_sheet_late()$$);                                             -- 09:15 Dubai
-select cron.schedule('sweep-expiries',   '0 3 * * *',  $$select sweep_expiries()$$);                                              -- 07:00 Dubai
-select cron.schedule('sweep-stock',      '0 3 * * *',  $$select sweep_stock()$$);                                                 -- 07:00 Dubai
+select cron.schedule('build-tomorrow',   '0 1 * * *',  $$select build_day(current_date + 1)$$);  -- 05:00 Dubai
+select cron.schedule('build-today',      '30 1 * * *', $$select build_day(current_date)$$);      -- 05:30 Dubai, a safety net
+select cron.schedule('sweep-expiries',   '0 3 * * *',  $$select sweep_expiries()$$);             -- 07:00 Dubai
+select cron.schedule('sweep-stock',      '0 3 * * *',  $$select sweep_stock()$$);                -- 07:00 Dubai
 
 -- Deliveries are sent by the push Edge Function, which reads the queue.
+-- ---------- setting a role's capabilities ----------
+
+-- The capability grid is a join table with a composite key, and the
+-- app's sync layer writes whole rows keyed on a single `id` column. So
+-- there was no way to save a grid from the app at all: the Roles screen
+-- ticked boxes, said "Role saved", dropped the capabilities on the
+-- floor and restored the database's grid on the next boot. Someone
+-- would have spent an afternoon fixing permissions that never changed.
+--
+-- SECURITY INVOKER — the default, and the whole point. This runs as
+-- whoever called it, so role_capabilities_write applies to every row it
+-- touches: you cannot grant a capability you do not hold, and you
+-- cannot touch a role that outranks you. Making this DEFINER would
+-- hand any caller the entire grid.
+-- The row and the grid go together, in one statement, for a reason: a
+-- new role's row is queued in the outbox, so a separate call to set its
+-- capabilities would reach the database first and die on the foreign
+-- key. A role is one permission change, not a row edit with a side
+-- table, and saving half of it is worse than saving none.
+create or replace function save_role(
+  p_id          text,
+  p_name        text,
+  p_rank        smallint,
+  p_description text,
+  p_works       boolean,
+  p_caps        capability[]
+)
+returns void
+language plpgsql
+set search_path = public
+as $$
+begin
+  insert into roles (id, name, rank, description, works)
+  values (p_id, p_name, p_rank, coalesce(p_description, ''), coalesce(p_works, false))
+  on conflict (id) do update
+    set name        = excluded.name,
+        rank        = excluded.rank,
+        description = excluded.description,
+        works       = excluded.works,
+        updated_at  = now();
+
+  delete from role_capabilities
+   where role_id = p_id
+     and capability <> all (p_caps);
+
+  insert into role_capabilities (role_id, capability)
+  select p_id, unnest(p_caps)
+  on conflict (role_id, capability) do nothing;
+end;
+$$;
+
+comment on function save_role(text, text, smallint, text, boolean, capability[]) is
+  'Save a role and its capability grid together, as the caller. The row policies decide what is allowed — a rank above your own, or a grant you do not hold yourself, is refused.';
+
+
 -- Scheduling it here rather than in the function keeps every clock in
 -- this schema in one file.
 select cron.schedule('push-queue', '*/2 * * * *', $$
@@ -4275,8 +3592,8 @@ select cron.schedule('push-queue', '*/2 * * * *', $$
   where current_setting('app.functions_url', true) is not null
 $$);
 
--- pg_cron holds the clock for the 05:00 day build and the 09:00 sheet
--- deadline. Schedules above are UTC; Dubai is UTC+4 all year.
+-- pg_cron holds the clock for the 05:00 day build and the 07:00 sweeps.
+-- Schedules above are UTC; Dubai is UTC+4 all year.
 --
 -- Written as a plain comment rather than COMMENT ON EXTENSION, because
 -- on a hosted Supabase project the extension is not owned by the role
@@ -4299,7 +3616,7 @@ $$);
 --
 --   issues/<issue-id>/<file>        photographs of a fault
 --   incidents/<incident-id>/<file>  photographs of an incident
---   sheets/<date>/<file>            the set-up and clear-up photographs
+--   chat/<message-id>/<file>        a photograph posted to the house chat
 --   assets/<asset-id>/<file>        the thing itself, and its manual
 --   documents/<document-id>/<file>  warranties, contracts, visas
 --   receipts/<profile-id>/<file>    petty cash receipts
@@ -4378,7 +3695,9 @@ begin
       and case (storage.foldername(name))[1]
             when 'issues' then has_capability('issue.viewAll') or has_capability('issue.raise')
             when 'incidents' then has_capability('issue.viewAll')
-            when 'sheets' then has_capability('sheet.view')
+            -- Same capability as the message the photograph hangs off.
+            -- A picture of the new gate code is as readable as typing it.
+            when 'chat' then has_capability('chat.view')
             when 'assets' then has_capability('property.view')
             when 'documents' then has_capability('documents.view')
             when 'receipts' then has_capability('money.view')
@@ -4397,7 +3716,7 @@ begin
       and case (storage.foldername(name))[1]
             when 'issues' then has_capability('issue.raise')
             when 'incidents' then has_capability('issue.raise')
-            when 'sheets' then has_capability('sheet.edit')
+            when 'chat' then has_capability('chat.post')
             when 'assets' then has_capability('property.edit')
             when 'documents' then has_capability('documents.view')
             -- Anybody may photograph their own receipt. R19: cash spent
@@ -4453,16 +3772,267 @@ end
 $$;
 
 -- ============================================================
+-- 20260828001700_chat.sql
+-- ============================================================
+
+-- ============================================================
+-- The house chat.
+--
+-- One thread for the whole house, and it replaces the WhatsApp group
+-- rather than duplicating it. That is the point: a delivery that landed,
+-- a car going in for a service, stock running out — those get said once,
+-- to one person, in a corridor, and then nobody else knows. Here they
+-- are said once and everybody who opens the app sees them.
+--
+-- Modelled on issue_comments, deliberately. A thread that can be quietly
+-- edited afterwards is not a record of what was said, so there is no
+-- update path and no delete path for the body of a message. Pinning is
+-- the one exception, because a standing notice — "Shrien lands Tuesday
+-- at 21:40" — has to be able to stop being a standing notice.
+--
+-- Read and post are separate capabilities, so somebody can be given the
+-- thread to read without being given a voice in it — a contractor on a
+-- temporary account, say.
+--
+-- The security rules for this table are at the bottom of this file
+-- rather than in 20260828001400_rls.sql with every other table's, and
+-- that is not a style choice. This migration runs after that one, and a
+-- policy cannot be written for a table that does not exist yet. Left
+-- there, the enable and the grant would be the first statement in the
+-- paste to fail, and would take every file after them down with them.
+-- ============================================================
+
+
+-- ---------- the messages ----------
+
+create table chat_messages (
+  id uuid primary key default gen_random_uuid(),
+  body text not null,
+  -- Who said it. RESTRICT, matching issue_comments: an unattributed
+  -- message in a house thread is a rumour, and deactivating somebody
+  -- must not quietly rewrite what they said.
+  by_id text not null references profiles (id) on delete restrict,
+  said_at timestamptz not null default now(),
+  pinned boolean not null default false,
+  -- Who pinned it, so a notice nobody will own can be questioned. SET
+  -- NULL rather than RESTRICT: the notice outlives the person who put
+  -- it up, and losing the message to keep the attribution is backwards.
+  pinned_by text references profiles (id) on delete set null,
+  photo_path text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  -- An empty message is a mis-tap, not a message — but a photograph
+  -- with nothing typed under it is a message, and often the clearest
+  -- one: the broken tap, the empty shelf, the receipt. The composer
+  -- has always allowed it. Checking the body alone meant every one of
+  -- those was refused with 23514 and disappeared out of the thread.
+  constraint chat_messages_not_empty
+    check (length(trim(body)) > 0 or photo_path is not null)
+);
+
+comment on table chat_messages is 'The house thread. Append-only by design — the body of a message is never edited and never deleted, because a thread that can be quietly rewritten is not a record of what was said.';
+comment on column chat_messages.body is 'What was said. Immutable once posted; the guard trigger below refuses any change to it.';
+comment on column chat_messages.by_id is 'Who said it. Restrict on delete, as with issue_comments — an unattributed message is a rumour.';
+comment on column chat_messages.said_at is 'When it was said, as opposed to created_at, which is when the row arrived. They differ for a message composed offline and sent later.';
+comment on column chat_messages.pinned is 'Standing notices. The only field on a posted message that may change, and it is what the notices block at the top of the screen reads.';
+comment on column chat_messages.pinned_by is 'Who put the notice up. Set null on delete: the notice outlives the person.';
+comment on column chat_messages.photo_path is 'A path in the house-files bucket under chat/<message-id>/, never a URL. The app asks for a short-lived signed link on each open. Null for a message with no photograph.';
+
+-- The thread itself, newest first, which is the only way it is ever read.
+create index chat_messages_said_idx on chat_messages (said_at desc);
+
+-- The notices block. Partial, because pinned messages are a handful out
+-- of everything ever said and a full index would be almost entirely
+-- rows the notices block never wants.
+create index chat_messages_pinned_idx on chat_messages (said_at desc) where pinned;
+
+create index chat_messages_by_idx on chat_messages (by_id);
+
+create trigger chat_messages_touch before update on chat_messages
+  for each row execute function touch_updated_at();
+
+
+-- ---------- append-only, enforced ----------
+
+-- The policies on this table come from grant_table, which writes the
+-- four ordinary ones — including an update and a delete. That is the
+-- right shape for stock and the wrong shape for a conversation, so the
+-- rule the table actually needs is enforced here instead, where it holds
+-- whatever the policies happen to say and whoever is connected.
+--
+-- Pinning is an update of two columns. Everything else about a posted
+-- message is fixed.
+create or replace function chat_messages_append_only() returns trigger
+language plpgsql
+set search_path = public, pg_catalog
+as $$
+begin
+  -- The guard is aimed at the app's own connections, which are the only
+  -- ones anybody in the house is using. service_role is left a way
+  -- through — the Edge Functions, and a repair run by hand — because a
+  -- photograph posted by mistake has to be removable by somebody, and
+  -- with no delete policy and no trigger exception there would be no
+  -- route to it at all.
+  if current_user not in ('authenticated', 'anon') then
+    return case tg_op when 'DELETE' then old else new end;
+  end if;
+
+  if tg_op = 'DELETE' then
+    raise exception 'A chat message cannot be deleted. Post a correction — the thread is the record.'
+      using errcode = 'restrict_violation';
+  end if;
+
+  if new.body is distinct from old.body
+     or new.by_id is distinct from old.by_id
+     or new.said_at is distinct from old.said_at
+     or new.photo_path is distinct from old.photo_path
+     or new.id is distinct from old.id then
+    raise exception 'A chat message cannot be edited. Only pinning may change after it is posted.'
+      using errcode = 'restrict_violation';
+  end if;
+
+  return new;
+end;
+$$;
+
+comment on function chat_messages_append_only() is
+  'Makes the append-only rule true rather than intended: refuses deletes, and refuses any update other than pinning.';
+
+create trigger chat_messages_no_edit before update or delete on chat_messages
+  for each row execute function chat_messages_append_only();
+
+
+-- ---------- the security rules ----------
+
+-- The same two lines every other table gets in 20260828001400_rls.sql,
+-- written here because the table did not exist when that file ran.
+-- Forced as well as enabled, so the rules are exercised in the SQL
+-- editor too — a superuser session ignores policies otherwise, and they
+-- look like they work when they have never once been tested.
+alter table chat_messages enable row level security;
+alter table chat_messages force row level security;
+
+select grant_table('chat_messages', 'chat.view', 'chat.post');
+
+
+-- ---------- the shorthand does not outlive the migrations ----------
+
+-- That was the last of the 43 calls. grant_table() writes policies, so
+-- anybody who could still call it could write themselves one — it goes
+-- now, at the foot of the file that used it last, rather than at the
+-- foot of 20260828001400_rls.sql where it was defined.
+drop function grant_table(text, text, text);
+
+-- ============================================================
+-- 20260828001800_realtime.sql
+-- ============================================================
+
+-- ============================================================
+-- Realtime.
+--
+-- Supabase's realtime server only sends changes for tables that are
+-- members of the supabase_realtime publication. Until this file existed
+-- there was no publication statement anywhere in the migrations, which
+-- means every subscription in the app connected, reported itself
+-- healthy, and then sat there receiving nothing for the rest of the day.
+--
+-- That failure is worth naming because of how it presents. Nothing
+-- errors. The screen simply does not update, so it looks like a bug in
+-- the subscription code, and the search goes to the application first
+-- and to the schema last. It is four lines of DDL.
+--
+-- Four tables are on the list, and they are the four where two people
+-- are looking at the same thing at the same time:
+--
+--   chat_messages    a conversation that arrives a minute late is not a
+--                    conversation. This is the whole reason the chat is
+--                    in the app rather than in the group.
+--   shopping_items   Rosie adds to the buy list from the kitchen while
+--                    Marvin is already out with it. Without this he buys
+--                    yesterday's list.
+--   inventory_items  a count done on a phone in the store has to show on
+--                    the buy list before the next person recounts it.
+--   issues           a fault raised is a fault somebody may already be
+--                    standing in front of.
+--
+-- Nothing else is on the list, and that is deliberate rather than
+-- unfinished. Every additional table is a stream of row payloads pushed
+-- to every connected device whether or not anything is showing them, and
+-- the tables that carry salaries, passport dates and owner-only spending
+-- are the last ones that should be broadcast on the off chance a screen
+-- wants them. Everything else in the app is read when a screen opens,
+-- which for a rota or a warranty date is soon enough.
+-- ============================================================
+
+
+-- The publication normally exists already — Supabase ships it on every
+-- project. It is created here when it does not, so this file also works
+-- against a plain Postgres, which is where the SQL gets checked before
+-- it is ever pasted into the real project.
+do $$
+begin
+  create publication supabase_realtime;
+exception
+  when duplicate_object then null;
+end
+$$;
+
+
+-- Each table is added in its own block. The whole point is that this
+-- file can be run again — after a partial deployment, or simply because
+-- somebody pasted the bundle twice — and adding a table that is already
+-- a member raises duplicate_object, which would otherwise take down the
+-- transaction and everything after it.
+do $$
+begin
+  alter publication supabase_realtime add table chat_messages;
+exception
+  when duplicate_object then null;
+end
+$$;
+
+do $$
+begin
+  alter publication supabase_realtime add table shopping_items;
+exception
+  when duplicate_object then null;
+end
+$$;
+
+do $$
+begin
+  alter publication supabase_realtime add table inventory_items;
+exception
+  when duplicate_object then null;
+end
+$$;
+
+do $$
+begin
+  alter publication supabase_realtime add table issues;
+exception
+  when duplicate_object then null;
+end
+$$;
+
+
+-- Realtime respects row-level security, but only for a subscriber whose
+-- connection carries their access token. A change to one of these four
+-- tables is filtered by the same policies the table itself has, so a
+-- family account subscribed to issues sees what a family account may
+-- see. Nothing here widens what anyone can read.
+
+-- ============================================================
 -- seed.sql — the house's starting rows. Runs last.
 -- ============================================================
 
 -- ============================================================
 -- The house's starting rows. Run once, after every migration.
 --
--- This is not example data. It is apartment 3808 as it actually is on
--- the 28th of August 2026: the people, the rooms, the hierarchy, the
--- observance that runs to the 11th of September, the standing shopping
--- rows printed on every sheet, and the thirty-one daily checks.
+-- This is not example data. It is apartment 3808 as it actually is: the
+-- seven people, the twelve rooms, the hierarchy, the stock that is
+-- counted, and the standing line on the buy list.
 --
 -- Two things it deliberately does not do:
 --
@@ -4472,8 +4042,14 @@ $$;
 --
 --   It does not invent a history. There are no fabricated ticks, no
 --   made-up spending and no seeded issues, because a fabricated record
---   of who cleaned the shrine last Tuesday is worse than an empty one.
---   The first real day is the first day somebody uses it.
+--   of who cleaned what last Tuesday is worse than an empty one. The
+--   first real day is the first day somebody uses it.
+--
+-- The people, the rooms and the capability grid below are the same house
+-- as src/seed/people.ts, src/seed/premises.ts and src/seed/roles.ts. Two
+-- copies of one household is a real cost, and the only thing that keeps
+-- them honest is that they are checked against each other by hand when
+-- either changes. They have drifted before.
 --
 -- Safe to re-run: every insert is ON CONFLICT DO NOTHING or an upsert.
 -- ============================================================
@@ -4485,16 +4061,22 @@ begin;
 insert into roles (id, name, rank, description, works, is_system) values
   ('owner',   'Owner',         100, 'The family principals. Everything, including owner-only spending and documents, and the power to create logins.', false, true),
   ('admin',   'Admin',          90, 'Runs the app on the household''s behalf. Everything an owner can do except see owner-only money and documents.', false, true),
-  ('manager', 'House manager',  70, 'In charge of the day. Checks the running sheet before it goes out, assigns the work, closes issues. Sees household spending but not the owner''s.', false, true),
-  ('staff',   'Staff',          50, 'Lives the day. Ticks the work off, fills the sheet in, counts the stock, logs the divo, reports anything broken.', true, true),
-  ('helper',  'Helper',         30, 'Paid by the hour or on site for a session — the cooks, and anyone brought in for an occasion.', true, true),
-  ('family',  'Family',         20, 'Lives here and is not staff. Reads the sheet, sees what is happening, can say something is broken.', false, true)
+  ('manager', 'House manager',  70, 'In charge of the day. Assigns the work, keeps the buy list honest, closes issues. Sees household spending but not the owner''s.', false, true),
+  ('staff',   'Staff',          50, 'Lives the day. Marvin and Rosie. Ticks the work off, counts the stock and marks what has been bought, reports anything broken, and is in the house chat like everyone else.', true, true),
+  ('helper',  'Helper',         30, 'Paid by the hour or on site for a session — anyone brought in for an occasion. Sees the day, ticks their own work, can say something is wrong.', true, true),
+  ('family',  'Family',         20, 'Lives here and is not staff. Sees what is happening, can say something is broken, and is in the house chat. No staff records, no money.', false, true)
 on conflict (id) do nothing;
 
 
 -- The capability grid. Written as a cross join against a list rather
 -- than sixty INSERT lines, so a reader can see the shape of each role
 -- in one place instead of counting rows.
+--
+-- Every role has chat.view and chat.post. The house chat is the one
+-- screen that is not about rank: a driver noticing a delivery has gone
+-- to the wrong door needs to be able to say so to everybody at once, and
+-- a thread only some people can speak in stops being where things get
+-- said.
 insert into role_capabilities (role_id, capability)
 select 'owner', c from unnest(enum_range(null::capability)) c
 on conflict do nothing;
@@ -4507,7 +4089,6 @@ on conflict do nothing;
 insert into role_capabilities (role_id, capability)
 select 'manager', c from unnest(array[
   'day.view', 'day.tick', 'day.assign', 'library.edit',
-  'sheet.view', 'sheet.edit', 'sheet.check', 'sheet.post',
   'issue.raise', 'issue.viewAll', 'issue.manage',
   'inventory.view', 'inventory.edit',
   'cooking.view', 'cooking.edit', 'cooking.approve',
@@ -4516,7 +4097,7 @@ select 'manager', c from unnest(array[
   'register.view', 'register.edit',
   'people.view', 'people.manage',
   'occasions.view', 'occasions.edit',
-  'shrine.view', 'shrine.log',
+  'chat.view', 'chat.post',
   'documents.view',
   'audit.view'
 ]::capability[]) c
@@ -4525,96 +4106,103 @@ on conflict do nothing;
 insert into role_capabilities (role_id, capability)
 select 'staff', c from unnest(array[
   'day.view', 'day.tick',
-  'sheet.view', 'sheet.edit', 'sheet.post',
   'issue.raise', 'issue.viewAll',
   'inventory.view', 'inventory.edit',
   'cooking.view', 'cooking.edit',
   'register.view', 'register.edit',
   'occasions.view',
-  'shrine.view', 'shrine.log',
+  'chat.view', 'chat.post',
   'documents.view'
 ]::capability[]) c
 on conflict do nothing;
 
 insert into role_capabilities (role_id, capability)
 select 'helper', c from unnest(array[
-  'day.view', 'day.tick', 'sheet.view', 'issue.raise', 'inventory.view', 'cooking.view'
+  'day.view', 'day.tick',
+  'issue.raise',
+  'inventory.view',
+  'cooking.view',
+  'chat.view', 'chat.post'
 ]::capability[]) c
 on conflict do nothing;
 
 insert into role_capabilities (role_id, capability)
 select 'family', c from unnest(array[
-  'day.view', 'sheet.view', 'issue.raise', 'cooking.view', 'occasions.view', 'shrine.view'
+  'day.view',
+  'issue.raise',
+  'cooking.view',
+  'occasions.view',
+  'chat.view', 'chat.post'
 ]::capability[]) c
 on conflict do nothing;
 
 
 -- ---------- the people ----------
 
--- Real email addresses are needed for the accounts that will exist.
--- The @3808.local ones below are placeholders and must be replaced
--- before the logins are created — an account cannot be made against an
--- address that does not resolve.
-insert into profiles (id, name, role, staff_roles, email, phone, initials, active, can_sign_in, is_household_member) values
-  ('p-shrien',  'Shrien',        'owner',   '{}',                              'shrien@3808.local',                    '+971 50 000 0001', 'SH', true,  true,  true),
-  ('p-aditya',  'Aditya Dave',   'owner',   '{priestcare}',                    'aditya.dave@evolvecaregroup.com',      '+971 50 000 0002', 'AD', true,  true,  true),
-  ('p-salyna',  'Salyna',        'owner',   '{}',                              'salyna@3808.local',                    '+971 50 000 0021', 'SA', true,  true,  true),
-  ('p-earl',    'Earl Tiongco',  'manager', '{}',                              'earl@3808.local',                      '+971 50 000 0003', 'ET', true,  true,  false),
-  ('p-rosie',   'Rosie',         'staff',   '{housekeeping,cooking}',          'rosie@3808.local',                     '+971 50 000 0011', 'RO', true,  true,  false),
-  ('p-reza',    'Reza',          'staff',   '{cooking,housekeeping}',          'reza@3808.local',                      '+971 50 000 0012', 'RE', true,  true,  false),
-  ('p-marvin',  'Marvin',        'staff',   '{driver,housekeeping}',           'marvin@3808.local',                    '+971 50 000 0013', 'MA', true,  true,  false),
-  ('p-jagdish', 'Jagdishbhai',   'helper',  '{cook}',                          '',                                     '+971 50 000 0014', 'JB', true,  false, false),
-  ('p-hitesh',  'Hiteshbhai',    'helper',  '{cook}',                          '',                                     '+971 50 000 0015', 'HB', true,  false, false),
-  ('p-priests', 'Priests',       'family',  '{}',                              '',                                     '',                 'PR', true,  false, false),
-  ('p-charlie', 'Charlie',       'family',  '{}',                              'charlie@3808.local',                   '+971 50 000 0022', 'CH', true,  true,  true),
-  ('p-aria',    'Aria',          'family',  '{}',                              '',                                     '',                 'AR', true,  false, true),
-  ('p-noor',    'Noor',          'family',  '{}',                              '',                                     '',                 'NO', true,  false, true)
+-- Shrien owns the home and is in the UK. Aditya owns it too and works
+-- from it, which is why his diet is on his profile rather than in a note
+-- somewhere: the Cooking screen reads it off here when portions are
+-- worked out, so nobody has to remember it on a day Rosie is busy.
+--
+-- Two staff, and that is the whole payroll. Anyone else who appears in
+-- this house is a vendor or a helper brought in for one occasion, and
+-- neither of those belongs on this list.
+--
+-- Real email addresses are needed for the accounts that will exist. The
+-- @3808.local ones below are placeholders and must be replaced before
+-- the logins are created — an account cannot be made against an address
+-- that does not resolve.
+insert into profiles (id, name, role, staff_roles, email, phone, initials, diet, active, can_sign_in, is_household_member) values
+  ('p-shrien',  'Shrien',       'owner',   '{}',                     'shrien@3808.local',               '+971 50 000 0001', 'SH', '',                                                            true, true,  true),
+  ('p-aditya',  'Aditya Dave',  'owner',   '{}',                     'aditya.dave@evolvecaregroup.com', '+971 50 000 0002', 'AD', 'Vegetarian — no meat, no fish, no eggs. Dairy is fine.',      true, true,  true),
+  ('p-earl',    'Earl Tiongco', 'manager', '{}',                     'earl@3808.local',                 '+971 50 000 0003', 'ET', '',                                                            true, true,  false),
+  ('p-rosie',   'Rosie',        'staff',   '{housekeeping,cooking}', 'rosie@3808.local',                '+971 50 000 0011', 'RO', '',                                                            true, true,  false),
+  ('p-marvin',  'Marvin',       'staff',   '{driver}',               'marvin@3808.local',               '+971 50 000 0013', 'MA', '',                                                            true, true,  false),
+  ('p-salyna',  'Salyna',       'family',  '{}',                     'salyna@3808.local',               '+971 50 000 0021', 'SA', '',                                                            true, true,  true),
+  ('p-charlie', 'Charlie',      'family',  '{}',                     'charlie@3808.local',              '+971 50 000 0022', 'CH', '',                                                            true, true,  true),
+  ('p-aria',    'Aria',         'family',  '{}',                     '',                                '',                 'AR', '',                                                            true, false, true),
+  ('p-noor',    'Noor',         'family',  '{}',                     '',                                '',                 'NO', '',                                                            true, false, true)
 on conflict (id) do nothing;
 
 
--- Shifts. Straight off the running sheet: Rosie lives in and is on
--- until close-down, Reza comes at 14:00 for the prayers, the cooks are
--- on site for their session only. Each has one day off, which is what
--- makes the coverage rules below do real work.
+-- Rosie lives in and works a long day; Marvin's is bracketed by the two
+-- school runs. Each has one day off, and they are different days on
+-- purpose — that is what makes the coverage rules below do real work
+-- rather than pointing at somebody who is also away.
 insert into shifts (id, staff_id, days, start_time, end_time, day_off) values
-  (gen_random_uuid(), 'p-rosie',   '{0,2,3,4,5,6}', '07:00', '22:00', 1),
-  (gen_random_uuid(), 'p-reza',    '{0,1,3,4,5,6}', '14:00', '22:00', 2),
-  (gen_random_uuid(), 'p-marvin',  '{0,1,2,4,5,6}', '09:00', '18:00', 3),
-  (gen_random_uuid(), 'p-jagdish', '{0,1,2,3,4,5}', '15:00', '17:00', 6),
-  (gen_random_uuid(), 'p-hitesh',  '{0,1,2,4,5,6}', '19:00', '21:00', 3)
+  (gen_random_uuid(), 'p-rosie',  '{0,2,3,4,5,6}', '07:00', '19:00', 1),
+  (gen_random_uuid(), 'p-marvin', '{0,1,2,4,5,6}', '08:00', '18:00', 3)
 on conflict do nothing;
 
+-- With two staff, cover is mostly the two of them covering each other,
+-- and the one thing neither can cover is driving on Marvin's day off —
+-- which is why that rule points at Earl and says so out loud.
 insert into coverage_rules (id, role, zone, cover_staff_id, notes) values
-  (gen_random_uuid(), 'driver',       'household', 'p-reza',   'Reza holds a licence and picks up the regular items.'),
-  (gen_random_uuid(), 'housekeeping', 'household', 'p-reza',   'Essential household tasks only, on Rosie''s day off.'),
-  (gen_random_uuid(), 'maintenance',  'household', 'p-marvin', 'Small repairs and anything that needs carrying. Anything electrical or plumbed goes to a vendor.'),
-  (gen_random_uuid(), 'cooking',      'household', 'p-reza',   'Simple meals only — otherwise the household orders in.'),
-  (gen_random_uuid(), 'cook',         'household', 'p-rosie',  'On the cooks'' days off Rosie reheats and makes the breads. Aditya is told the day before.'),
-  (gen_random_uuid(), 'priestcare',   'household', 'p-earl',   'Earl stays with the priests if Aditya is away. Nothing about the shrine is decided without Aditya.')
+  (gen_random_uuid(), 'driver',       'any',       'p-earl',   'On Marvin''s day off Earl books the school run and any pickup. Nobody else in the house drives.'),
+  (gen_random_uuid(), 'housekeeping', 'household', 'p-marvin', 'Essential household tasks only on Rosie''s day off — bins, bathrooms, the cat.'),
+  (gen_random_uuid(), 'maintenance',  'household', 'p-marvin', 'Small repairs and anything that needs carrying. Anything electrical or plumbed goes to a vendor, not to Marvin.'),
+  (gen_random_uuid(), 'cooking',      'household', 'p-marvin', 'Reheating what Rosie left only. Anything else, the household orders in.')
 on conflict do nothing;
 
 
 -- ---------- the house ----------
 
 insert into settings (
-  id, house, address, whatsapp_group, sheet_post_by, checked_by_name,
+  id, house, address,
   currency, locale, meal_times, portion_default,
   working_days, working_start, working_end,
-  observance_from, observance_to,
   alert_lead_days, laundry_stages, unused_dows, plan_start, plan_end, parity_epoch
 ) values (
   true,
   'Goldcrest Views 3808',
   'Goldcrest Views 1, Jumeirah Lakes Towers, Cluster V, Dubai',
-  '3808 Home',
-  '09:00',
-  'Earl Tiongco',
   'AED',
   'en-AE',
   '{"Breakfast": "08:00", "Lunch": "13:30", "Dinner": "19:30"}'::jsonb,
   4,
+  -- Sunday to Thursday. Deliveries, vendors and the school run keep to
+  -- it; the house itself runs seven days a week.
   '{0,1,2,3,4}', '09:00', '18:00',
-  '2026-08-13', '2026-09-11',
   30,
   '{Wash,Dry,Fold,Iron,"Put away"}',
   '{1,5}',
@@ -4624,144 +4212,115 @@ insert into settings (
 on conflict (id) do nothing;
 
 
+-- One household on one floor. Every area below is inside 3808, and the
+-- standards read as they do because it is also where Aditya works — the
+-- lounge and the dining room are both a home and a place someone takes a
+-- call from.
 insert into areas (id, name, type, zone, floor, status, deep_freq, deep_dow, parity, use_level, standard) values
-  ('a-sh1', 'Shrine',              'shrine',      'household', '38', 'active',    7, 1, 0, null,   'Dusted with the shrine cloth only — no sprays, no chemicals. Statues not moved. Used matchsticks and ash cleared. Divo lit and topped up with the correct oil.'),
-  ('a-pr1', 'Prayer Area',         'prayer',      'household', '38', 'active',    7, 6, 0, null,   'Mats and seating square and laid out for the number expected. Mics tested. Cleared and put back after every sitting. Ken never in here.'),
-  ('a-lv1', 'Lounge',              'living',      'household', '38', 'active',   14, 3, 0, null,   'Cushions plumped, surfaces clear, no cooking smell, lights set warm for the evening.'),
-  ('a-lv2', 'Dining Room',         'living',      'household', '38', 'active',   14, 3, 1, null,   'Table laid to standard, chairs aligned and evenly spaced.'),
-  ('a-kt1', 'Kitchen',             'kitchen',     'household', '38', 'active',    7, 4, 0, null,   'Empty countertops, dry sink, polished tap. No meat in here during the observance. Shrine items washed with the shrine sponge only.'),
-  ('a-ba3', 'Guest Toilet',        'bathroom',    'household', '38', 'active',    7, 2, 0, 'high', 'Spotless and stocked. Checked and toilet paper restocked every 20 minutes while the prayers run.'),
-  ('a-br1', 'Master Bedroom',      'bedroom',     'household', '38', 'occupied', 14, 1, 0, null,   'Symmetrical, calm, no personal clutter visible from the doorway.'),
-  ('a-br2', 'Bedroom 2',           'bedroom',     'household', '38', 'occupied', 14, 2, 0, null,   'Symmetrical, calm, no personal clutter visible from the doorway.'),
-  ('a-br3', 'Bedroom 3 — Guest',   'bedroom',     'household', '38', 'guest',    14, 3, 1, null,   'Kept permanently guest-ready. Used by the priests when they stay.'),
-  ('a-ot1', 'Balcony — main',      'outdoor',     'household', '38', 'active',   14, 6, 0, null,   'No sand or leaf litter, furniture square, glass clear. Reza from 17:00.'),
-  ('a-ot2', 'Balcony — second',    'outdoor',     'household', '38', 'active',   14, 6, 1, null,   'Swept and clear. The door is the draught that puts the divo out — keep it shut during prayers.'),
-  ('a-cr1', 'Entrance & Hallway',  'circulation', 'household', '38', 'active',    7, 5, 0, null,   'First thing a guest sees. Shoes off here. Floor dry, glass clear, nothing stored here.'),
-  ('a-ut1', 'Laundry & Utility',   'utility',     'household', '38', 'active',   14, 6, 0, null,   'Machines wiped, filters clear, floor dry, nothing left in a drum overnight.'),
-  ('a-st2', 'Store',               'storage',     'household', '38', 'active',   30, 6, 0, null,   'Stock visible and countable from the door. Divo oil, wicks and matches always two deep.')
-on conflict (id) do nothing;
-
-
--- ---------- the observance ----------
-
--- Thirty days, 13 August to 11 September 2026, both confirmed. Day one
--- was first worked out from the source document — the sheet dated Friday
--- 21 August is headed '9th day of the Prayer' — and that reading was
--- right. These two dates drive the occasion line on every sheet and the
--- window enforce_food_rule() refuses meat in.
-insert into observances (id, name, start_date, end_date, day_count, notes, active) values (
-  'ob-prayer', 'The Prayer', '2026-08-13', '2026-09-11', 30,
-  'The priests lead every afternoon from 16:00 and the meal follows the aarti. The ninth day was the large sitting. All food is vegetarian for the whole thirty days.',
-  true
-)
+  ('a-lv1', 'Lounge',             'living',      'household', '38', 'active',   14, 3, 0, null,   'Cushions plumped, surfaces clear, no cooking smell, lights set warm for the evening.'),
+  ('a-lv2', 'Dining Room',        'living',      'household', '38', 'active',   14, 3, 1, null,   'Table laid to standard, chairs aligned and evenly spaced.'),
+  ('a-kt1', 'Kitchen',            'kitchen',     'household', '38', 'active',    7, 4, 0, null,   'Empty countertops, dry sink, polished tap. Vegetarian food prepared with its own board and pan, never the ones meat has been on.'),
+  ('a-ba3', 'Guest Toilet',       'bathroom',    'household', '38', 'active',    7, 2, 0, 'high', 'Spotless and stocked. Checked again at midday — it is the one a visitor uses.'),
+  ('a-br1', 'Master Bedroom',     'bedroom',     'household', '38', 'occupied', 14, 1, 0, null,   'Symmetrical, calm, no personal clutter visible from the doorway.'),
+  ('a-br2', 'Bedroom 2',          'bedroom',     'household', '38', 'occupied', 14, 2, 0, null,   'Symmetrical, calm, no personal clutter visible from the doorway.'),
+  ('a-br3', 'Bedroom 3 — Guest',  'bedroom',     'household', '38', 'guest',    14, 3, 1, null,   'Kept permanently guest-ready, whether or not anyone is expected.'),
+  ('a-ot1', 'Balcony — main',     'outdoor',     'household', '38', 'active',   14, 6, 0, null,   'No sand or leaf litter, furniture square, glass clear. Late afternoon, once the sun is off it.'),
+  ('a-ot2', 'Balcony — second',   'outdoor',     'household', '38', 'active',   14, 6, 1, null,   'Swept and clear. Keep the door shut — it is the draught that blows the lounge doors about.'),
+  ('a-cr1', 'Entrance & Hallway', 'circulation', 'household', '38', 'active',    7, 5, 0, null,   'First thing a guest sees. Shoes off here. Floor dry, glass clear, nothing stored here.'),
+  ('a-ut1', 'Laundry & Utility',  'utility',     'household', '38', 'active',   14, 6, 0, null,   'Machines wiped, filters clear, floor dry, nothing left in a drum overnight.'),
+  ('a-st2', 'Store',              'storage',     'household', '38', 'active',   30, 6, 0, null,   'Stock visible and countable from the door. Nothing stacked in front of anything else — a count you cannot do from the doorway does not get done.')
 on conflict (id) do nothing;
 
 
 -- ---------- how the work is grouped ----------
 
 insert into task_categories (id, name, icon, sort_order, zone, system, active) values
-  ('c-shrine',   'Shrine & Prayers',   '🪔',  1, 'household', null,        true),
-  ('c-open',     'Opening up',         '🌅',  2, 'household', null,        true),
-  ('c-kitchen',  'Kitchen',            '🍳',  3, 'household', null,        true),
-  ('c-bath',     'Bathrooms',          '🛁',  4, 'household', null,        true),
-  ('c-bed',      'Bedrooms',           '🛏',  5, 'household', null,        true),
-  ('c-living',   'Living areas',       '🛋',  6, 'household', null,        true),
-  ('c-outdoor',  'Outside',            '🌿',  7, 'household', null,        true),
-  ('c-cat',      'Cat care',           '🐱',  8, 'household', null,        true),
-  ('c-close',    'Close-down',         '🌙',  9, 'household', null,        true),
-  ('c-laundry',  'Laundry',            '🧺', 10, 'household', 'laundry',   true),
-  ('c-cooking',  'Cooking',            '👨‍🍳', 11, 'household', 'cooking',   true),
-  ('c-occasion', 'Occasions',          '✦',  12, 'household', 'occasion',  true),
-  ('c-plants',   'Plants',             '🪴', 13, 'household', 'plants',    true),
-  ('c-contract', 'Contracts & visits', '🔧', 14, 'household', 'contracts', true)
+  ('c-open',     'Opening up',         '🌅',  1, 'household', null,        true),
+  ('c-kitchen',  'Kitchen',            '🍳',  2, 'household', null,        true),
+  ('c-bath',     'Bathrooms',          '🛁',  3, 'household', null,        true),
+  ('c-bed',      'Bedrooms',           '🛏',  4, 'household', null,        true),
+  ('c-living',   'Living areas',       '🛋',  5, 'household', null,        true),
+  ('c-outdoor',  'Outside',            '🌿',  6, 'household', null,        true),
+  ('c-cat',      'Cat care',           '🐱',  7, 'household', null,        true),
+  ('c-close',    'Close-down',         '🌙',  8, 'household', null,        true),
+  ('c-laundry',  'Laundry',            '🧺',  9, 'household', 'laundry',   true),
+  ('c-cooking',  'Cooking',            '👨‍🍳', 10, 'household', 'cooking',   true),
+  ('c-occasion', 'Occasions',          '✦',  11, 'household', 'occasion',  true),
+  ('c-plants',   'Plants',             '🪴', 12, 'household', 'plants',    true),
+  ('c-contract', 'Contracts & visits', '🔧', 13, 'household', 'contracts', true)
 on conflict (id) do nothing;
 
 
 -- The starting task library. Small on purpose. Everything here is
--- something the running sheet or the house standards already say out
--- loud; anything else is for Earl and Rosie to add from the app, where
--- adding a task and having it appear every day from then on is a
--- two-minute job rather than a code change.
+-- something the house standards already say out loud; anything else is
+-- for Earl and Rosie to add from the app, where adding a task and having
+-- it appear every day from then on is a two-minute job rather than a
+-- code change.
 insert into library_tasks (id, category_id, text, apply, area_type, area_id, zone, freq, dow, parity, instructions, role, default_time, est_minutes, group_as, light, sort_order) values
-  ('lt-divo-am',   'c-shrine',  'Divo lit and topped up — correct oil only',              'area',     null,       'a-sh1', 'household', 'daily',    0, 0, 'Correct oil only. If the level is low or empty, log it — Earl is told automatically.', 'housekeeping', '07:15', 5,  'Shrine',        false, 0),
-  ('lt-shrine-dust','c-shrine', 'Dust the shrine with the shrine cloth',                  'area',     null,       'a-sh1', 'household', 'daily',    0, 0, 'The shrine cloth only. No sprays, no chemicals. Statues are not moved — not to dust behind, not to make room.', 'housekeeping', '07:20', 10, 'Shrine',        false, 1),
-  ('lt-shrine-ash','c-shrine',  'Clear used matchsticks and ash',                         'area',     null,       'a-sh1', 'household', 'daily',    0, 0, '', 'housekeeping', '07:30', 5,  'Shrine',        false, 2),
-  ('lt-shrine-stock','c-shrine','Check matches, wicks and two spare bottles of divo oil', 'area',     null,       'a-sh1', 'household', 'daily',    0, 0, 'Two spare. Not one — the divo burns down over about three days and Marvin buys the oil first thing.', 'housekeeping', '07:35', 5, 'Shrine', false, 3),
-  ('lt-prayer-set','c-shrine',  'Prayer set-up — mats, mics, flowers, incense, prasad',   'area',     null,       'a-pr1', 'household', 'daily',    0, 0, 'Finished by 15:45. Mics on and tested. Drinking water and clean glasses ready for the breaks.', 'housekeeping', '14:30', 45, 'Prayer area',  false, 4),
-  ('lt-prayer-reset','c-shrine','Clear the prayer area and put it back',                  'area',     null,       'a-pr1', 'household', 'daily',    0, 0, 'After the meal. Shrine items washed with the shrine sponge only.', 'housekeeping', '21:30', 25, 'Close-down',  false, 5),
+  ('lt-open-house',   'c-open',    'Open up — blinds, air the rooms, first pass of the hall', 'global',   null,       null,    'household', 'daily',    0, 0, 'The house should look ready before anyone comes downstairs. No cooking smell in the lounge. Shoes off at the entrance.', 'housekeeping', '07:00', 15, 'Opening up', false, 0),
+  ('lt-shopping-list','c-open',    'Write today''s buy list',                                 'global',   null,       null,    'household', 'daily',    0, 0, 'By 09:00, so Marvin has it before the morning run. Anything below its minimum is already on the list — this is for everything else. Check the yoghurt first: only buy it if it is finished or nearly.', 'housekeeping', '09:00', 10, 'Opening up', false, 1),
 
-  ('lt-open-house','c-open',    'Open up — blinds, air the rooms, first pass of the hall','global',   null,       null,    'household', 'daily',    0, 0, 'No cooking smell in the lounge. Shoes off at the entrance.', 'housekeeping', '07:00', 15, 'Opening up', false, 0),
-  ('lt-shopping-list','c-open', 'Write today''s list of anything needed',                 'global',   null,       null,    'household', 'daily',    0, 0, 'By 09:00, so Marvin has it for the morning run. Milk and yoghurt daily — only buy the yoghurt if it is finished or nearly.', 'housekeeping', '09:00', 10, 'Opening up', false, 1),
+  ('lt-kitchen-reset','c-kitchen', 'Kitchen reset — counters, sink, tap',                     'area',     null,       'a-kt1', 'household', 'daily',    0, 0, 'Empty countertops, dry sink, polished tap. Aditya''s food is vegetarian: his board and pan are the ones meat has never been on.', 'cooking', '10:00', 20, 'Kitchen', false, 0),
+  ('lt-kitchen-close','c-kitchen', 'Kitchen back to normal after the meal',                   'area',     null,       'a-kt1', 'household', 'daily',    0, 0, 'Leftovers covered, labelled and dated. A container with no date on it gets thrown away, so the label is the whole job.', 'cooking', '21:45', 25, 'Close-down', false, 1),
 
-  ('lt-kitchen-reset','c-kitchen','Kitchen reset — counters, sink, tap',                  'area',     null,       'a-kt1', 'household', 'daily',    0, 0, 'Empty countertops, dry sink, polished tap. No meat in here during the observance.', 'cooking', '10:00', 20, 'Kitchen', false, 0),
-  ('lt-kitchen-close','c-kitchen','Kitchen back to normal after the meal',                'area',     null,       'a-kt1', 'household', 'daily',    0, 0, 'Leftovers covered, labelled and dated. Shrine items washed with the shrine sponge only.', 'cooking', '21:45', 25, 'Close-down', false, 1),
+  ('lt-guest-wc',     'c-bath',    'Guest toilet — clean and restock',                        'area',     null,       'a-ba3', 'household', 'daily',    0, 0, 'Spotless and stocked. Checked again at midday — it is the one a visitor uses.', 'housekeeping', '13:00', 10, 'Bathrooms', false, 0),
+  ('lt-bath-daily',   'c-bath',    'Bathroom — surfaces, mirror, floor',                      'areaType', 'bathroom', null,    'household', 'daily',    0, 0, '', 'housekeeping', '11:00', 12, 'Bathrooms', true,  1),
 
-  ('lt-guest-wc',  'c-bath',    'Guest toilet — clean and restock',                       'area',     null,       'a-ba3', 'household', 'daily',    0, 0, 'Spotless and stocked. During the prayers this is every twenty minutes, logged on the sheet.', 'housekeeping', '13:00', 10, 'Bathrooms', false, 0),
-  ('lt-bath-daily','c-bath',    'Bathroom — surfaces, mirror, floor',                     'areaType', 'bathroom', null,    'household', 'daily',    0, 0, '', 'housekeeping', '11:00', 12, 'Bathrooms', true,  1),
+  ('lt-bed-daily',    'c-bed',     'Make the bed and clear surfaces',                         'areaType', 'bedroom',  null,    'household', 'daily',    0, 0, 'Symmetrical, calm, nothing personal visible from the doorway. Stand at the door and look before you leave it.', 'housekeeping', '10:30', 12, 'Bedrooms', true, 0),
+  ('lt-bed-deep',     'c-bed',     'Deep clean the room',                                     'areaType', 'bedroom',  null,    'household', 'areaDeep', 0, 0, 'Lift objects, do not clean around them. Under the bed and along the edges.', 'housekeeping', null,   45, 'Bedrooms', false, 1),
 
-  ('lt-bed-daily', 'c-bed',     'Make the bed and clear surfaces',                        'areaType', 'bedroom',  null,    'household', 'daily',    0, 0, 'Symmetrical, calm, nothing personal visible from the doorway.', 'housekeeping', '10:30', 12, 'Bedrooms', true, 0),
-  ('lt-bed-deep',  'c-bed',     'Deep clean the room',                                    'areaType', 'bedroom',  null,    'household', 'areaDeep', 0, 0, '', 'housekeeping', null,   45, 'Bedrooms', false, 1),
+  ('lt-living',       'c-living',  'Living area — cushions, surfaces, floor',                 'areaType', 'living',   null,    'household', 'daily',    0, 0, 'Dining room and lounge clear and tidy before the first guest arrives. No cat bowls or cleaning things on show.', 'housekeeping', '11:30', 15, 'Living areas', false, 0),
+  ('lt-hall',         'c-living',  'Entrance and hallway',                                    'area',     null,       'a-cr1', 'household', 'daily',    0, 0, 'The first thing a guest sees. Floor dry, glass clear, nothing stored here.', 'housekeeping', '11:45', 10, 'Living areas', false, 1),
 
-  ('lt-living',    'c-living',  'Living area — cushions, surfaces, floor',                'areaType', 'living',   null,    'household', 'daily',    0, 0, 'Dining room, lounge and balcony clear and tidy before the first guest arrives. No cat bowls or cleaning things on show.', 'housekeeping', '11:30', 15, 'Living areas', false, 0),
-  ('lt-hall',      'c-living',  'Entrance and hallway',                                   'area',     null,       'a-cr1', 'household', 'daily',    0, 0, 'The first thing a guest sees. Floor dry, glass clear, nothing stored here.', 'housekeeping', '11:45', 10, 'Living areas', false, 1),
+  ('lt-balcony',      'c-outdoor', 'Balcony — sweep and square the furniture',                'areaType', 'outdoor',  null,    'household', 'daily',    0, 0, 'Late afternoon, once the sun is off it. Keep the second balcony door shut — it is the draught that blows the lounge doors about.', 'housekeeping', '17:00', 15, 'Outside', false, 0),
 
-  ('lt-balcony',   'c-outdoor', 'Balcony — sweep and square the furniture',               'areaType', 'outdoor',  null,    'household', 'daily',    0, 0, 'Reza from 17:00. Keep the second balcony door shut during prayers — it is the draught that puts the divo out.', 'housekeeping', '17:00', 15, 'Outside', false, 0),
+  ('lt-ken-feed',     'c-cat',     'Feed Ken and refresh his water',                          'global',   null,       null,    'household', 'daily',    0, 0, 'Bowls washed with the sponge kept only for the cat. While you are there: eating, drinking, moving normally, eyes and nose clear.', 'housekeeping', '07:45', 5, 'Ken', false, 0),
+  ('lt-ken-tray',     'c-cat',     'Ken''s tray',                                             'global',   null,       null,    'household', 'daily',    0, 0, '', 'housekeeping', '08:00', 5, 'Ken', false, 1),
 
-  ('lt-ken-feed',  'c-cat',     'Feed Ken and refresh his water',                         'global',   null,       null,    'household', 'daily',    0, 0, '', 'housekeeping', '07:45', 5, 'Ken', false, 0),
-  ('lt-ken-tray',  'c-cat',     'Ken''s tray',                                            'global',   null,       null,    'household', 'daily',    0, 0, '', 'housekeeping', '08:00', 5, 'Ken', false, 1),
-  ('lt-ken-away',  'c-cat',     'Ken shut away from the prayer area and the open doors',  'global',   null,       null,    'household', 'daily',    0, 0, 'Before the first guest arrives, and checked again during the prayers.', 'housekeeping', '15:00', 5, 'Ken', false, 2),
+  ('lt-bins',         'c-close',   'Empty every bin',                                         'global',   null,       null,    'household', 'daily',    0, 0, '', 'housekeeping', '21:50', 10, 'Close-down', false, 0),
+  ('lt-photos',       'c-close',   'Post the day''s photographs to the house chat',           'global',   null,       null,    'household', 'daily',    0, 0, 'R18. The photograph existing is not the point — it being somewhere everyone can see it is the point.', 'housekeeping', '22:05', 5, 'Close-down', false, 1),
+  ('lt-cash',         'c-close',   'Log any cash spent, with receipts',                       'global',   null,       null,    'household', 'daily',    0, 0, 'R19. Photograph the receipt as you log it, not later.', 'housekeeping', '22:10', 5, 'Close-down', false, 2),
+  ('lt-tell-earl',    'c-close',   'Anything broken, missing or missed — tell Earl',          'global',   null,       null,    'household', 'daily',    0, 0, 'R20. The same day. Not tomorrow.', 'housekeeping', '22:15', 5, 'Close-down', false, 3),
 
-  ('lt-bins',      'c-close',   'Empty every bin',                                        'global',   null,       null,    'household', 'daily',    0, 0, '', 'housekeeping', '21:50', 10, 'Close-down', false, 0),
-  ('lt-divo-pm',   'c-close',   'Check the divo and top it up before bed',                'area',     null,       'a-sh1', 'household', 'daily',    0, 0, 'The last thing on the list, and it is on the list for a reason.', 'housekeeping', '22:00', 5, 'Close-down', false, 1),
-  ('lt-photos',    'c-close',   'Post the set-up and clear-up photographs on the group',  'global',   null,       null,    'household', 'daily',    0, 0, 'R18. The photograph existing is not the point — it being on the 3808 Home group is the point.', 'housekeeping', '22:05', 5, 'Close-down', false, 2),
-  ('lt-cash',      'c-close',   'Log any cash spent, with receipts',                      'global',   null,       null,    'household', 'daily',    0, 0, 'R19. Photograph the receipt as you log it, not later.', 'housekeeping', '22:10', 5, 'Close-down', false, 3),
-  ('lt-tell-earl', 'c-close',   'Anything broken, missing or missed — tell Earl',         'global',   null,       null,    'household', 'daily',    0, 0, 'R20. The same day. Not tomorrow.', 'housekeeping', '22:15', 5, 'Close-down', false, 4),
-
-  ('lt-store',     'c-close',   'Store — stock visible and countable from the door',      'area',     null,       'a-st2', 'household', 'weekly',   6, 0, 'Divo oil, wicks and matches always two deep.', 'housekeeping', null, 20, 'Store', false, 5)
+  ('lt-store',        'c-close',   'Store — stock visible and countable from the door',       'area',     null,       'a-st2', 'household', 'weekly',   6, 0, 'Nothing stacked in front of anything else. A count you cannot do from the doorway does not get done.', 'housekeeping', null, 20, 'Store', false, 4)
 on conflict (id) do nothing;
 
 
 -- ---------- stock ----------
 
 insert into inventory_categories (id, name, zone, sort_order) values
-  ('ic-prayer',  'Prayer & shrine',   'household', 1),
-  ('ic-kitchen', 'Kitchen & pantry',  'household', 2),
-  ('ic-clean',   'Cleaning',          'household', 3),
-  ('ic-laundry', 'Laundry',           'household', 4),
-  ('ic-bath',    'Bathroom',          'household', 5),
-  ('ic-cat',     'Ken',               'household', 6)
+  ('ic-kitchen', 'Kitchen & pantry', 'household', 1),
+  ('ic-clean',   'Cleaning',         'household', 2),
+  ('ic-laundry', 'Laundry',          'household', 3),
+  ('ic-bath',    'Bathroom',         'household', 4),
+  ('ic-cat',     'Ken',              'household', 5)
 on conflict (id) do nothing;
 
--- The prayer and shrine rows carry the two flags that exist nowhere
--- else in the schema, and they are the reason this section is seeded at
--- all rather than left to whoever first opens Inventory.
-insert into inventory_items (name, category_id, zone, qty, min_qty, unit, recurring, notes, prayer_item, shrine_only) values
-  ('Divo oil',                'ic-prayer',  'household', 2,  2, 'bottles', true,  'Two spare, always. It burns down over about three days and Marvin buys it first thing.', false, false),
-  ('Wicks',                   'ic-prayer',  'household', 40, 20, 'units',  true,  '', false, false),
-  ('Matches',                 'ic-prayer',  'household', 4,  2, 'boxes',   true,  '', false, false),
-  ('Incense',                 'ic-prayer',  'household', 6,  3, 'packs',   true,  '', false, false),
-  ('Fresh flowers',           'ic-prayer',  'household', 1,  1, 'sets',    true,  'For the set-up. Marvin, first thing.', false, false),
-  ('Shrine cloth',            'ic-prayer',  'household', 2,  1, 'units',   false, 'Shrine only. Never a spray, never a chemical. If it cannot be found, say so and wait — do not substitute.', false, true),
-  ('Shrine sponge',           'ic-prayer',  'household', 2,  1, 'units',   false, 'Shrine only. Never meat, never the normal washing-up.', false, true),
-  ('Milk — prayer marked',    'ic-prayer',  'household', 0,  0, 'litres',  false, 'Brought for prayer. Marked on the lid and never used for consumption. If a container is not marked, treat it as prayer stock and ask.', true,  false),
-  ('Yoghurt — prayer marked', 'ic-prayer',  'household', 0,  0, 'kg',      false, 'Brought for prayer. Marked and set aside.', true,  false),
-  ('Fresh milk',              'ic-kitchen', 'household', 2,  2, 'litres',  true,  'Low fat. Bought daily by Marvin.', false, false),
-  ('Yoghurt',                 'ic-kitchen', 'household', 1,  1, 'kg',      true,  'Checked daily — only buy if finished or nearly finished.', false, false),
-  ('Basmati rice',            'ic-kitchen', 'household', 5,  2, 'kg',      false, '', false, false),
-  ('Toilet paper',            'ic-bath',    'household', 24, 12, 'rolls',  true,  'The guest toilet goes through it during the prayers.', false, false),
-  ('Bin bags',                'ic-clean',   'household', 60, 30, 'units',  true,  '', false, false),
-  ('Laundry detergent',       'ic-laundry', 'household', 3,  2, 'bottles', true,  '', false, false),
-  ('Cat litter',              'ic-cat',     'household', 3,  2, 'bags',    true,  'Same brand — Ken will not use the other one.', false, false)
+-- A starting count, not a full pantry. These are the rows that carry a
+-- minimum worth having on day one: each one is something that has been
+-- run out of, and min_qty is set at what should still be left when the
+-- next shop happens rather than at zero. Below the minimum the line puts
+-- itself on the buy list, which is the point of counting anything.
+insert into inventory_items (name, category_id, zone, qty, min_qty, unit, recurring, notes) values
+  ('Fresh milk',        'ic-kitchen', 'household',  2,  2, 'litres',  true,  'Low fat. Bought daily.'),
+  ('Yoghurt',           'ic-kitchen', 'household',  1,  1, 'kg',      true,  'Checked daily — only buy if finished or nearly finished.'),
+  ('Basmati rice',      'ic-kitchen', 'household',  5,  2, 'kg',      false, ''),
+  ('Atta',              'ic-kitchen', 'household',  2,  1, 'bags',    true,  'Rosie makes the breads fresh, so this moves faster than it looks.'),
+  ('Cooking oil',       'ic-kitchen', 'household',  2,  1, 'bottles', true,  ''),
+  ('Toilet paper',      'ic-bath',    'household', 24, 12, 'rolls',   true,  ''),
+  ('Bin bags',          'ic-clean',   'household', 60, 30, 'units',   true,  ''),
+  ('Laundry detergent', 'ic-laundry', 'household',  3,  2, 'bottles', true,  ''),
+  ('Cat litter',        'ic-cat',     'household',  3,  2, 'bags',    true,  'Same brand — Ken will not use the other one.')
 on conflict do nothing;
 
 
--- The three standing rows printed on every running sheet. They are on
--- the list every day whether or not anyone adds them, which is what
--- 'standing' means.
+-- The standing line on the buy list. Standing means it is there every
+-- day whether or not anybody adds it, and marking it purchased records
+-- the run rather than clearing the row — the milk is needed again
+-- tomorrow. Everything else on the list arrives one of the other two
+-- ways: somebody adds it, or an item above falls below its minimum.
 insert into shopping_items (name, zone, qty, unit, status, added_by, notes, standing) values
-  ('Daily items — milk and yoghurt',   'household', 1, 'run',     'needed', 'p-rosie', '2L low-fat fresh milk, 1kg yoghurt. Marvin. Mark the containers so prayer items are not used for consumption. Check the yoghurt daily — only buy if finished or nearly finished.', true),
-  ('Oil for the divo',                 'household', 2, 'bottles', 'needed', 'p-rosie', 'Keep 2 spare. Marvin, first thing. Correct oil only.', true),
-  ('Flowers, incense, matches, wicks', 'household', 1, 'set',     'needed', 'p-rosie', 'Marvin. Fresh flowers for the set-up.', true)
+  ('Daily items — milk and yoghurt', 'household', 1, 'run', 'needed', 'p-rosie', '2L low-fat fresh milk, 1kg yoghurt. Marvin. Check the yoghurt first — only buy it if it is finished or nearly finished.', true)
 on conflict do nothing;
 
 
@@ -4772,16 +4331,15 @@ on conflict do nothing;
 -- anybody tries to enter is refused.
 insert into expense_categories (id, name, kind, zone, sort_order) values
   ('ec-groc',     'Groceries & food',       'household',   'household',  1),
-  ('ec-prayer',   'Prayer & shrine',        'household',   'household',  2),
-  ('ec-hclean',   'Cleaning & consumables', 'supplies',    'household',  3),
-  ('ec-cat',      'Ken',                    'household',   'household',  4),
-  ('ec-hmaint',   'Maintenance & repairs',  'maintenance', 'household',  5),
-  ('ec-util',     'Utilities',              'utilities',   'household',  6),
-  ('ec-veh',      'Vehicles',               'vehicle',     'household',  7),
-  ('ec-staff',    'Staff costs',            'staff',       'household',  8),
-  ('ec-contract', 'Service contracts',      'maintenance', 'household',  9),
-  ('ec-guest',    'Guests & entertaining',  'household',   'household', 10),
-  ('ec-other',    'Other',                  'other',       'household', 11)
+  ('ec-hclean',   'Cleaning & consumables', 'supplies',    'household',  2),
+  ('ec-cat',      'Ken',                    'household',   'household',  3),
+  ('ec-hmaint',   'Maintenance & repairs',  'maintenance', 'household',  4),
+  ('ec-util',     'Utilities',              'utilities',   'household',  5),
+  ('ec-veh',      'Vehicles',               'vehicle',     'household',  6),
+  ('ec-staff',    'Staff costs',            'staff',       'household',  7),
+  ('ec-contract', 'Service contracts',      'maintenance', 'household',  8),
+  ('ec-guest',    'Guests & entertaining',  'household',   'household',  9),
+  ('ec-other',    'Other',                  'other',       'household', 10)
 on conflict (id) do nothing;
 
 
@@ -4810,89 +4368,11 @@ on conflict (profile_id) do nothing;
 
 -- ---------- today ----------
 
--- Build the current day and open its sheet, so the app opens on
--- something real rather than on an empty state that looks broken.
+-- Build today and tomorrow, so the app opens on something real rather
+-- than on an empty state that looks broken. From then on the 05:00 job
+-- in 20260828001500_functions_cron.sql does it.
 select build_day(current_date);
-select ensure_sheet(current_date);
 select build_day(current_date + 1);
-select ensure_sheet(current_date + 1);
-
-
--- The thirty-one checks, on today's sheet. Exact items, exact order,
--- taken from section 6 of the running sheet. The 05:00 job copies them
--- forward to each new day.
-do $$
-declare
-  s_id uuid;
-  g_id uuid;
-  items text[];
-  i int;
-begin
-  select id into s_id from running_sheets where date = current_date;
-  if s_id is null or exists (select 1 from sheet_check_groups where sheet_id = s_id) then
-    return;
-  end if;
-
-  insert into sheet_check_groups (sheet_id, title, sort_order)
-  values (s_id, 'SHRINE — before prayers', 0) returning id into g_id;
-  items := array[
-    'Divo lit and topped up — correct oil only',
-    'Shoes off before going near the shrine',
-    'Dusted with the shrine cloth — no sprays, no chemicals',
-    'Used matchsticks and ash cleared away',
-    'Statues not moved',
-    'Area around the shrine clear',
-    'Matches, wicks and 2 spare bottles of divo oil in stock'];
-  for i in 1 .. array_length(items, 1) loop
-    insert into sheet_check_items (group_id, text, sort_order) values (g_id, items[i], i - 1);
-  end loop;
-
-  insert into sheet_check_groups (sheet_id, title, sort_order)
-  values (s_id, 'PRAYER SET-UP — finished by 15:45', 1) returning id into g_id;
-  items := array[
-    'Mats and seating laid out for the number expected',
-    'Mics on and tested',
-    'Fresh flowers',
-    'Incense',
-    'Prasad made and covered',
-    'Thali and prayer items laid out',
-    'Drinking water and clean glasses ready for the breaks',
-    'Prayer books or sheets out, if being used'];
-  for i in 1 .. array_length(items, 1) loop
-    insert into sheet_check_items (group_id, text, sort_order) values (g_id, items[i], i - 1);
-  end loop;
-
-  insert into sheet_check_groups (sheet_id, title, sort_order)
-  values (s_id, 'THE HOUSE — before the first guest arrives', 2) returning id into g_id;
-  items := array[
-    'Dining room, lounge and balcony clear and tidy',
-    'No cat bowls or cleaning things on show',
-    'Ken shut away from the prayer area and the open doors',
-    'Guest toilet spotless and stocked',
-    'Table laid to standard',
-    'Rooms aired — no cooking smell in the lounge',
-    'Lights set warm for the evening'];
-  for i in 1 .. array_length(items, 1) loop
-    insert into sheet_check_items (group_id, text, sort_order) values (g_id, items[i], i - 1);
-  end loop;
-
-  insert into sheet_check_groups (sheet_id, title, sort_order)
-  values (s_id, 'AFTER THE MEAL — close-down', 3) returning id into g_id;
-  items := array[
-    'Prayer area cleared and put back',
-    'Shrine items washed with the shrine sponge only',
-    'Divo checked and topped up before anyone goes to bed',
-    'Leftovers covered, labelled and dated',
-    'All bins emptied',
-    'Kitchen back to normal',
-    'Photos of the set-up and clear-up posted on the 3808 Home group',
-    'Any cash spent logged, with receipts',
-    'Anything broken, missing or missed — tell Earl the same day'];
-  for i in 1 .. array_length(items, 1) loop
-    insert into sheet_check_items (group_id, text, sort_order) values (g_id, items[i], i - 1);
-  end loop;
-end;
-$$;
 
 
 commit;
