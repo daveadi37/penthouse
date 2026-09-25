@@ -4,8 +4,8 @@ dist/
 *.tsbuildinfo
 
 # Environment. The anon key is safe to ship in a built bundle, but the
-# file itself is per-machine and the VAPID public key changes with the
-# project — so it is configured, not committed. See app/docs/DEPLOY.md.
+# file itself is per-machine and the key changes with the project — so
+# it is configured, not committed. See SETUP.md.
 .env
 .env.*
 !.env.example
