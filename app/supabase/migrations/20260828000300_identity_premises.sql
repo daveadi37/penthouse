@@ -7,11 +7,10 @@
 -- 20260828001400_rls.sql calls, so 'what may this person do' is asked
 -- and answered in exactly one place.
 --
--- profiles is every person the app knows — Rosie, Reza, Marvin, the two
--- cooks, Earl, Aditya, Shrien, Salyna, the household and the priests.
--- areas is the rooms of apartment 3808. settings is one row, and it
--- carries the lines printed on the running sheet: the address, the
--- WhatsApp group, the 09:00 post-by time and Earl's name.
+-- profiles is every person the app knows — Marvin, Rosie, Earl, Aditya,
+-- Shrien, Salyna and Charlie. areas is the rooms of apartment 3808.
+-- settings is one row, and it carries the house identity: the address,
+-- the currency, the working week and the meal times.
 --
 -- Three conventions that hold for the whole schema and are stated once
 -- here rather than repeated in every file:
@@ -44,9 +43,8 @@ create table roles (
   -- what stops whoever holds roles.manage from promoting themselves.
   rank smallint not null,
   description text not null default '',
-  -- People in this role do the work: tasks route to them, they appear on
-  -- the rota and on the running sheet. An owner who also cooks is still
-  -- not staff.
+  -- People in this role do the work: tasks route to them and they appear
+  -- on the rota. An owner who also cooks is still not staff.
   works boolean not null default false,
   -- Seeded roles cannot be deleted, because the seed data and the
   -- policies below both name them. Their capabilities stay editable.
@@ -84,15 +82,20 @@ create index role_capabilities_cap_idx on role_capabilities (capability);
 
 -- Text primary key, not uuid. The app hardcodes these ids: the store
 -- defaults to 'p-earl', Cooking.tsx routes meal approvals to Earl by id,
--- and the laundry rota names 'p-rosie', 'p-reza' and 'p-marvin'
--- directly. Those are not seed rows that can be regenerated — they are
--- constants in the source, so the id has to survive a rebuild.
+-- and the laundry rota names 'p-rosie' and 'p-marvin' directly. Those
+-- are not seed rows that can be regenerated — they are constants in the
+-- source, so the id has to survive a rebuild.
 create table profiles (
   id text primary key,
   -- Links a profile to a Supabase auth user. Making a row here does not
   -- create a way to sign in; the invite does, and this column is what
-  -- joins the two. Null for the priests and for anyone who never logs in.
-  auth_user_id uuid unique,
+  -- joins the two. Null for anyone who never logs in.
+  --
+  -- The foreign key matters more than it looks: has_capability() matches
+  -- on this column, so a deleted auth user that left its uuid behind
+  -- here would go on granting powers to whichever account Supabase
+  -- issued that uuid to next. SET NULL severs the profile instead.
+  auth_user_id uuid unique references auth.users (id) on delete set null,
   name text not null,
   -- A reference, not an enum. RESTRICT rather than CASCADE: deleting a
   -- role that somebody still holds should fail loudly, not silently
@@ -103,9 +106,13 @@ create table profiles (
   email text not null default '',
   phone text not null default '',
   initials text not null,
+  -- What this person eats, in the words the cook reads. Empty means no
+  -- restriction. Free text and not an enum: a diet is a sentence, and
+  -- the moment it is a closed list somebody's allergy has nowhere to go.
+  diet text not null default '',
   active boolean not null default true,
-  -- Whether this person has a login at all. The two cooks and the
-  -- priests are on every sheet and never open the app.
+  -- Whether this person has a login at all. Rosie and Marvin are on the
+  -- rota whether or not they ever open the app.
   can_sign_in boolean not null default false,
   -- Household members appear in the laundry rota and the meal portions.
   is_household_member boolean not null default false,
@@ -113,11 +120,12 @@ create table profiles (
   updated_at timestamptz not null default now()
 );
 
-comment on table profiles is 'Every person the app knows — the staff, the two cooks, Earl, Aditya, Shrien, Salyna, the household and the priests. Deactivated, never deleted.';
-comment on column profiles.id is 'Stable text id. Hardcoded in the app source (p-earl, p-rosie, p-reza, p-marvin), so it must not be regenerated.';
+comment on table profiles is 'Every person the app knows — Marvin and Rosie, Earl, Aditya, Shrien and the household. Deactivated, never deleted.';
+comment on column profiles.id is 'Stable text id. Hardcoded in the app source (p-earl, p-rosie, p-marvin), so it must not be regenerated.';
 comment on column profiles.auth_user_id is 'The Supabase auth user this profile signs in as. Null for people with no login. Set by the admin-users Edge Function, never from the browser.';
 comment on column profiles.staff_roles is 'What this person is for. Drives auto-routing of work. Empty for anyone whose role is not marked works.';
-comment on column profiles.can_sign_in is 'Whether a login exists or is intended. False for the cooks and the priests.';
+comment on column profiles.diet is 'What this person eats, read by the cook when portions are worked out. Empty means no restriction.';
+comment on column profiles.can_sign_in is 'Whether a login exists or is intended. False for anyone who is on the rota but never opens the app.';
 comment on column profiles.initials is 'Two letters, shown on the avatar chip where there is no room for a name.';
 
 create index profiles_role_idx on profiles (role) where active;
@@ -130,9 +138,8 @@ create trigger profiles_touch before update on profiles
 -- ---------- areas ----------
 
 -- Text primary key for the same reason as profiles: library tasks are
--- written against 'a-sh1' (the shrine) and 'a-pr1' (the prayer area),
--- and the seeded library would have to be rewritten if these were
--- regenerated on every rebuild.
+-- written against particular rooms by id, and the seeded library would
+-- have to be rewritten if these were regenerated on every rebuild.
 create table areas (
   id text primary key,
   name text not null,
@@ -158,8 +165,8 @@ create table areas (
   constraint areas_parity_binary check (parity in (0, 1))
 );
 
-comment on table areas is 'The rooms of apartment 3808. The shrine and the prayer area are areas like any other, so work can be scheduled against them.';
-comment on column areas.id is 'Stable text id. The seeded task library references a-sh1 and a-pr1 by name.';
+comment on table areas is 'The rooms of apartment 3808. Every room is an area, so work can be scheduled against any of them.';
+comment on column areas.id is 'Stable text id. The seeded task library references areas by name.';
 comment on column areas.deep_freq is '0 = not on a deep-clean cycle, 7 = weekly, 14 = fortnightly, 30 = monthly.';
 comment on column areas.parity is 'Which half of the fortnight a fortnightly room falls in. Counted from settings.parity_epoch.';
 comment on column areas.use_level is 'High-use bathrooms get an extra midday pass. Null for normal use.';
@@ -179,14 +186,9 @@ create trigger areas_touch before update on areas
 create table settings (
   id boolean primary key default true,
   house text not null,
-  -- Printed at the top of every running sheet.
+  -- Where the house is. Printed on anything that leaves the app, and
+  -- what a delivery driver is given.
   address text not null,
-  -- Where the sheet is posted each morning.
-  whatsapp_group text not null,
-  -- The sheet is late after this. The documents say 09:00.
-  sheet_post_by time not null default '09:00',
-  -- Fixed on the printed sheet. Earl checks it before it goes out.
-  checked_by_name text not null,
   currency text not null default 'AED',
   locale text not null default 'en-GB',
   -- Meal name to serve time, e.g. {"Dinner": "20:30"}. A map rather than
@@ -194,16 +196,11 @@ create table settings (
   -- queried across.
   meal_times jsonb not null default '{}'::jsonb,
   portion_default smallint not null default 4,
-  -- The working week: which days the cooks and the deliveries keep to,
-  -- and the window on those days. The prayers keep to none of it, which
-  -- is why the sheet runs seven days a week.
+  -- The working week: which days the staff and the deliveries keep to,
+  -- and the window on those days.
   working_days smallint[] not null default '{}',
   working_start time not null default '09:00',
   working_end time not null default '18:00',
-  -- The observance that owns the running sheet. Outside these dates the
-  -- app opens on Today instead, and the food rule stops biting.
-  observance_from date,
-  observance_to date,
   -- How many days ahead a visa, warranty or contract expiry starts warning.
   alert_lead_days smallint not null default 30,
   -- The named stages a load moves through. Ordered.
@@ -219,17 +216,14 @@ create table settings (
   updated_at timestamptz not null default now(),
   constraint settings_single_row check (id),
   constraint settings_plan_window check (plan_end > plan_start),
-  constraint settings_working_window check (working_end > working_start),
-  constraint settings_observance_order check (observance_to is null or observance_from is null or observance_to >= observance_from)
+  constraint settings_working_window check (working_end > working_start)
 );
 
-comment on table settings is 'One row. Carries the house identity and the lines printed on the running sheet — the address, the 3808 Home group, the 09:00 post-by time and Earl''s name.';
+comment on table settings is 'One row. Carries the house identity — the address, the currency, the working week, the meal times and the day-plan window.';
 comment on column settings.id is 'Always true. The check constraint is what makes this table a singleton.';
-comment on column settings.sheet_post_by is 'The sheet is late after this time. R4 in the spec.';
-comment on column settings.checked_by_name is 'A name, not a profile id, because it is a printed line on the page.';
+comment on column settings.address is 'Apartment 3808, Goldcrest Views 1, Jumeirah Lakes Towers, Dubai. What a delivery or a vendor is given.';
 comment on column settings.meal_times is 'Meal name to serve time. Read whole, never queried across, so a map and not a table.';
 comment on column settings.parity_epoch is 'Day zero for fortnightly parity. Move it and every fortnightly room flips.';
-comment on column settings.observance_from is 'First day of the observance. The running sheet is the front of the app between these dates and a record outside them.';
 
 create trigger settings_touch before update on settings
   for each row execute function touch_updated_at();

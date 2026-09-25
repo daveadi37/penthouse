@@ -204,15 +204,10 @@
   transition: transform 0.11s ease, opacity 0.11s;
   white-space: nowrap;
 }
-:root[data-theme='dark'] .btn,
-[data-theme='dark'] .btn {
-  color: #12150f;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) .btn {
-    color: #12150f;
-  }
-}
+/* A solid button gets its ink from --paper, which is already near-black in the
+   dark theme, so the dark ink needs no rule of its own. An earlier one carried
+   more weight than .btn.ghost and .btn.danger and stole their colour, leaving
+   those buttons invisible after dark. */
 .btn:active {
   transform: scale(0.97);
 }

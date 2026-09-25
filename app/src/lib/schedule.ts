@@ -161,12 +161,13 @@ function onShiftAt(staffId: ID, at: TimeStr | undefined, shifts: Shift[]): boole
  * is actually on shift at the hour the task wants; then the coverage
  * rule; then anyone working; then nobody, which surfaces as a gap.
  *
- * Two details earn their keep. The shift window matters because Reza
- * starts at 14:00 — routing him a 07:00 task reads as assigned and is
+ * Two details earn their keep. The shift window matters because Marvin
+ * starts at 08:00 — routing him a 07:00 task reads as assigned and is
  * not. And where several people hold the role, the task id picks
  * between them rather than the first one always winning: without that,
- * Rosie collects every housekeeping task in the house and Reza shows
- * zero, which is exactly the day this app is meant to prevent.
+ * one person collects every housekeeping task in the house and the
+ * other shows zero, which is exactly the day this app is meant to
+ * prevent.
  */
 export function routeTo(
   role: StaffRole,

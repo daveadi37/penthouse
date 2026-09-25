@@ -6,7 +6,6 @@ import {money} from '@/lib/format';
 import {allExpiries, staffList, visibleRecurring} from '@/lib/selectors';
 import type { DateStr, Zone } from '@/types';
 import {Btn, Card, Chip, Empty, IconBtn, List, PageHead, Row, SectionHead, Seg, cx} from '@/components/ui';
-import {ZoneFilterBar} from '@/components/Shell';
 
 /* Everything that has a date gets on the calendar. That is the
    difference between one the manager reads every morning and one
@@ -45,7 +44,6 @@ export function Calendar() {
   const db = useStore((s) => s.db);
   const date = useStore((s) => s.date);
   const setDate = useStore((s) => s.setDate);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   const [mode, setMode] = React.useState<'month' | 'week'>('month');
   const [ref, setRef] = React.useState(monthStart(date));
   const [active, setActive] = React.useState<Layer[]>([
@@ -64,7 +62,7 @@ export function Calendar() {
   );
 
   const filtered = entries.filter(
-    (e) => active.includes(e.layer) && (zoneFilter === 'all' || !e.zone || e.zone === zoneFilter),
+    (e) => active.includes(e.layer),
   );
 
   const monthLabel = `${MON[pd(ref).getMonth()]} ${pd(ref).getFullYear()}`;
@@ -88,7 +86,6 @@ export function Calendar() {
       />
 
       <div className="row wrap" style={{ gap: 8, marginBottom: 12 }}>
-        <ZoneFilterBar />
       </div>
 
       <div className="row wrap" style={{ gap: 6, marginBottom: 14 }}>

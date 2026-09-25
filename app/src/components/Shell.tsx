@@ -5,7 +5,8 @@ import { allAlerts, awaitingApproval, belowMin, openIssues, uncollected, unreadF
 import { can, roleLabel } from '@/lib/access';
 import { signOut } from '@/lib/auth';
 import { backendConfigured } from '@/lib/supabase';
-import { Avatar, cx, IconBtn, Seg } from './ui';
+import { Avatar, cx, IconBtn } from './ui';
+import { SyncPanel } from './SyncPanel';
 import type { Capability } from '@/types';
 
 interface NavItem {
@@ -23,6 +24,7 @@ interface NavItem {
    refuses the data as well, which is the part that actually matters. */
 const NAV: NavItem[] = [
   { key: 'today', label: 'Today', icon: '◇', cap: 'day.view', group: 'Day' },
+  { key: 'chat', label: 'House Chat', icon: '◍', cap: 'chat.view', group: 'Day' },
   { key: 'planner', label: 'Daily Planner', icon: '▤', cap: 'day.tick', group: 'Day' },
   { key: 'checklist', label: 'Checklist', icon: '✓', cap: 'day.tick', group: 'Day' },
   { key: 'calendar', label: 'Calendar', icon: '▦', cap: 'day.view', group: 'Day' },
@@ -106,7 +108,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <div style={{ marginTop: 'auto', paddingTop: 16 }}>
           <hr className="hair" style={{ margin: '0 10px 12px' }} />
-          <SyncRow />
+          <SyncPanel />
           <button
             type="button"
             className={cx('navbtn', route.module === 'notifications' && 'on')}
@@ -153,21 +155,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
  * lands them on a refusal.
  */
 function mobileTabs(available: NavItem[]): NavItem[] {
-  const order = ['today', 'planner', 'checklist', 'issues', 'inventory', 'cooking', 'money', 'alerts', 'calendar'];
+  const order = ['today', 'chat', 'inventory', 'issues', 'planner', 'checklist', 'cooking', 'money', 'alerts', 'calendar'];
   const have = new Set(available.map((n) => n.key));
   return order.filter((k) => have.has(k)).slice(0, 5).map((k) => NAV.find((n) => n.key === k)!);
-}
-
-function SyncRow() {
-  const [state] = React.useState<'ok' | 'offline'>(navigator.onLine ? 'ok' : 'offline');
-  return (
-    <div className="navbtn" style={{ cursor: 'default', gap: 10 }}>
-      <span className={cx('syncdot', state !== 'ok' && state)} />
-      <span style={{ fontSize: 12.5 }}>
-        {state === 'ok' ? 'All changes saved' : 'Offline — changes queued'}
-      </span>
-    </div>
-  );
 }
 
 /* Two different things wearing the same button.
@@ -280,21 +270,5 @@ export function RoleSwitcher() {
         </div>
       )}
     </>
-  );
-}
-
-/* Zone filter, used by most operational screens. */
-export function ZoneFilterBar() {
-  const zoneFilter = useStore((s) => s.zoneFilter);
-  const setZoneFilter = useStore((s) => s.setZoneFilter);
-  return (
-    <Seg
-      value={zoneFilter}
-      onChange={setZoneFilter}
-      options={[
-        { value: 'all', label: 'Everything' },
-        { value: 'household', label: 'Household' },
-      ]}
-    />
   );
 }

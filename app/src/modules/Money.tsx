@@ -7,7 +7,6 @@ import {money, plural} from '@/lib/format';
 import {billsDue, budgetLines, catName, pettyBalance, profileName, spendByZone, staffList, vendorName, visibleRecurring, visibleTransactions} from '@/lib/selectors';
 import type { PettyCashEntry, RecurringCharge, Transaction } from '@/types';
 import {Bar, Btn, Card, Chip, Field, IconBtn, List, PageHead, Row, SectionHead, Seg, Select, Sheet, Stat, Text, ZoneChip} from '@/components/ui';
-import {ZoneFilterBar} from '@/components/Shell';
 
 type Tab = 'overview' | 'transactions' | 'recurring' | 'petty';
 
@@ -83,7 +82,6 @@ export function Money() {
             { value: 'petty', label: 'Petty cash' },
           ]}
         />
-        <ZoneFilterBar />
       </div>
 
       {tab === 'overview' && <Overview month={month} seeOwner={seeOwner} />}
@@ -143,12 +141,10 @@ function Overview({ month, seeOwner }: { month: string; seeOwner: boolean }) {
 
 function Transactions({ month, seeOwner }: { month: string; seeOwner: boolean }) {
   const db = useStore((s) => s.db);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   const openSheet = useStore((s) => s.openSheet);
   const [q, setQ] = React.useState('');
 
   let list = visibleTransactions(db, seeOwner).filter((t) => monthKey(t.date) === month);
-  if (zoneFilter !== 'all') list = list.filter((t) => t.zone === zoneFilter);
   if (q) list = list.filter((t) => (t.description + catName(db, t.categoryId)).toLowerCase().includes(q.toLowerCase()));
   const sorted = list.slice().sort((a, b) => b.date.localeCompare(a.date));
   const total = sorted.reduce((s, t) => s + t.amount, 0);
@@ -200,12 +196,10 @@ function Transactions({ month, seeOwner }: { month: string; seeOwner: boolean })
 
 function Recurring({ seeOwner }: { seeOwner: boolean }) {
   const db = useStore((s) => s.db);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   const openSheet = useStore((s) => s.openSheet);
   const patch = useStore((s) => s.patch);
 
   let list = visibleRecurring(db, seeOwner).filter((r) => r.active);
-  if (zoneFilter !== 'all') list = list.filter((r) => r.zone === zoneFilter);
   const sorted = list.slice().sort((a, b) => (a.nextDue || '9999').localeCompare(b.nextDue || '9999'));
   const monthlyEquivalent = list.reduce((s, r) => {
     const per = r.cadence === 'weekly' ? 4.33 : r.cadence === 'monthly' ? 1 : r.cadence === 'quarterly' ? 1 / 3 : r.cadence === 'biannual' ? 1 / 6 : 1 / 12;

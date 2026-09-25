@@ -2,9 +2,9 @@
 -- Issues, and the incident log.
 --
 -- One table, not four. A fault ("the tap drips"), a condition flag
--- ("the shrine cloth is fraying"), a request ("can we have a second
--- kettle") and a supply request ("we are out of divo oil") are the same
--- object with a different `kind`: something is wrong or wanted,
+-- ("the hallway rug is fraying"), a request ("can we have a second
+-- kettle") and a supply request ("we are out of washing powder") are
+-- the same object with a different `kind`: something is wrong or wanted,
 -- somebody said so, somebody has to decide, and it moves through the
 -- same seven statuses. Four tables would mean four status flows, four
 -- notification paths and four screens that drift apart.

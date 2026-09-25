@@ -7,7 +7,6 @@ import {profileName} from '@/lib/selectors';
 import {DOC_CATS} from '@/types';
 import type { DocumentRec } from '@/types';
 import {Btn, Card, Chip, Empty, Field, KV, List, PageHead, Row, Seg, Select, Sheet, Stat, Text, ZoneChip} from '@/components/ui';
-import {ZoneFilterBar} from '@/components/Shell';
 
 export function Documents() {
   const route = useRoute();
@@ -19,7 +18,6 @@ export function Documents() {
 function DocList() {
   const user = useUser();
   const db = useStore((s) => s.db);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   const openSheet = useStore((s) => s.openSheet);
   const [tab, setTab] = React.useState<'expiring' | 'all'>('expiring');
   const [cat, setCat] = React.useState('all');
@@ -27,7 +25,6 @@ function DocList() {
 
   const isOwner = user.role === 'owner';
   let list = db.documents.filter((d) => isOwner || d.visibility === 'manager');
-  if (zoneFilter !== 'all') list = list.filter((d) => d.zone === zoneFilter);
   if (cat !== 'all') list = list.filter((d) => d.cat === cat);
   if (q) list = list.filter((d) => (d.title + d.filename + d.notes).toLowerCase().includes(q.toLowerCase()));
 
@@ -76,7 +73,6 @@ function DocList() {
             { value: 'all', label: 'Everything', count: list.length },
           ]}
         />
-        <ZoneFilterBar />
       </div>
 
       <div className="row wrap" style={{ gap: 8, marginBottom: 14 }}>

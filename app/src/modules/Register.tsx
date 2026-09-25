@@ -7,7 +7,6 @@ import {areaName, contractState, plantsDue, serviceState, vehicleState, vendorNa
 import {ASSET_CATS} from '@/types';
 import type { Asset, Plant, ServiceContract, Vehicle } from '@/types';
 import {Btn, Card, Chip, Empty, Field, KV, List, PageHead, Row, SectionHead, Seg, Select, Sheet, Stat, Text, ZoneChip, cx} from '@/components/ui';
-import {ZoneFilterBar} from '@/components/Shell';
 
 type Tab = 'assets' | 'vehicles' | 'contracts' | 'plants';
 
@@ -79,7 +78,6 @@ function RegisterHead({ tab }: { tab: Tab }) {
             { value: 'plants', label: 'Plants' },
           ]}
         />
-        <ZoneFilterBar />
       </div>
     </>
   );
@@ -89,12 +87,10 @@ function RegisterHead({ tab }: { tab: Tab }) {
 
 function AssetList() {
   const db = useStore((s) => s.db);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   const [q, setQ] = React.useState('');
   const [cat, setCat] = React.useState<string>('all');
 
   let list = db.assets.filter((a) => a.active);
-  if (zoneFilter !== 'all') list = list.filter((a) => a.zone === zoneFilter);
   if (cat !== 'all') list = list.filter((a) => a.cat === cat);
   if (q) list = list.filter((a) => (a.name + a.brand + a.model + a.serial).toLowerCase().includes(q.toLowerCase()));
 
@@ -307,9 +303,7 @@ function AssetDetail({ id }: { id: string }) {
 
 function VehicleList() {
   const db = useStore((s) => s.db);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   let list = db.vehicles.filter((v) => v.active);
-  if (zoneFilter !== 'all') list = list.filter((v) => v.zone === zoneFilter);
 
   return (
     <div className="grid auto-lg">
@@ -442,9 +436,7 @@ function VehicleDetail({ id }: { id: string }) {
 
 function ContractList() {
   const db = useStore((s) => s.db);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   let list = db.contracts.filter((c) => c.active);
-  if (zoneFilter !== 'all') list = list.filter((c) => c.zone === zoneFilter);
   const sorted = list.slice().sort((a, b) => (a.next || '9999').localeCompare(b.next || '9999'));
 
   return (
@@ -555,12 +547,10 @@ function ContractDetail({ id }: { id: string }) {
 
 function PlantList() {
   const db = useStore((s) => s.db);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   const patch = useStore((s) => s.patch);
   const openSheet = useStore((s) => s.openSheet);
   const due = plantsDue(db);
   let list = db.plants.filter((p) => p.active);
-  if (zoneFilter !== 'all') list = list.filter((p) => p.zone === zoneFilter);
 
   return (
     <>

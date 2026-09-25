@@ -1,10 +1,10 @@
 -- ============================================================
 -- The fixed vocabularies.
 --
--- Every closed union in src/types/index.ts and src/types/prayer.ts
--- becomes a Postgres enum here. The point is that the database refuses
--- a value the app could never have produced — a sheet cannot be
--- 'sent', an issue cannot be 'pending', a break is served or it is not.
+-- Every closed union in src/types/index.ts becomes a Postgres enum
+-- here. The point is that the database refuses a value the app could
+-- never have produced — an issue cannot be 'pending', a meal is
+-- approved or it is not, a break is served or it is not.
 --
 -- Two conventions, both deliberate:
 --
@@ -38,7 +38,6 @@ create type staff_role as enum (
   'housekeeping',
   'cooking',
   'cook',
-  'priestcare',
   'driver',
   'maintenance',
   'any'
@@ -53,10 +52,6 @@ create type capability as enum (
   'day.tick',
   'day.assign',
   'library.edit',
-  'sheet.view',
-  'sheet.edit',
-  'sheet.check',
-  'sheet.post',
   'issue.raise',
   'issue.viewAll',
   'issue.manage',
@@ -75,8 +70,8 @@ create type capability as enum (
   'people.manage',
   'occasions.view',
   'occasions.edit',
-  'shrine.view',
-  'shrine.log',
+  'chat.view',
+  'chat.post',
   'documents.view',
   'documents.viewOwner',
   'settings.edit',
@@ -92,8 +87,6 @@ create type area_type as enum (
   'bathroom',
   'kitchen',
   'living',
-  'shrine',
-  'prayer',
   'utility',
   'storage',
   'outdoor',
@@ -396,21 +389,3 @@ create type notif_kind as enum (
 -- The class is what a person switches off. Nobody mutes 'assigned'
 -- work in practice, but they do mute reminders.
 create type notif_class as enum ('assigned', 'reminder', 'escalation', 'response');
-
--- ---------- the running sheet ----------
-
--- 'draft' while it is being filled in, 'checked' once Earl has read
--- it, 'posted' once it has gone to the group. The step from checked to
--- posted is the one the footer rule guards.
-create type sheet_status as enum ('draft', 'checked', 'posted');
-
--- The shopping list's in-stock column. 'unknown' is the honest default
--- — nobody has looked yet — and is not the same as 'no'.
-create type stock_state as enum ('yes', 'no', 'partial', 'unknown');
-
-create type divo_action as enum ('lit', 'topped', 'checked', 'extinguished');
-
-create type oil_level as enum ('full', 'half', 'low', 'empty');
-
--- The two photographs that go on the group each night.
-create type sheet_photo_kind as enum ('setup', 'clearup');

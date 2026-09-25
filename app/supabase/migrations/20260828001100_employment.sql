@@ -3,9 +3,9 @@
 --
 -- Every table in this file is owner-and-manager only, and the policies
 -- say so. A staff member reads their own row and nobody else's, which
--- is not a nicety — Rosie's salary, Reza's visa date and Marvin's
--- passport expiry are three of the most sensitive columns in the whole
--- database, and they sit beside a shopping list.
+-- is not a nicety — Rosie's salary, her visa date and Marvin's passport
+-- expiry are three of the most sensitive columns in the whole database,
+-- and they sit beside a shopping list.
 --
 -- The three expiry dates are why this file exists at all. A residence
 -- visa renewal takes about three weeks, a visa renewal needs six months
@@ -60,7 +60,7 @@ create trigger staff_details_touch before update on staff_details
 
 -- ---------- attendance ----------
 
--- Append-only. Reza is paid by the hour, so this table is the pay
+-- Append-only. Where somebody is paid by the hour this table is the pay
 -- record, and a row that can be edited quietly is a pay record nobody
 -- can rely on. Corrections are a new row with a note, not an update.
 create table attendance (
@@ -77,7 +77,7 @@ create table attendance (
   constraint attendance_out_after_in check (clock_out is null or clock_in is null or clock_out >= clock_in)
 );
 
-comment on table attendance is 'Hours worked. Append-only, because for Reza this is the pay record and an editable pay record is not one.';
+comment on table attendance is 'Hours worked. Append-only, because for anyone paid by the hour this is the pay record, and an editable pay record is not one.';
 comment on column attendance.source is 'manual where somebody typed it, derived where it came from the shift pattern.';
 
 create index attendance_staff_idx on attendance (staff_id, worked_on desc);
@@ -103,12 +103,12 @@ create table leave_requests (
   constraint leave_dates_order check (to_date >= from_date),
   constraint leave_days_positive check (days > 0),
   -- Approved by somebody, or not approved. Silent approval is how a
-  -- house ends up with nobody in it during a prayer week.
+  -- house ends up with nobody in it in a week somebody is away.
   constraint leave_approval_attributed
     check (status <> 'approved' or (approved_by is not null and approved_at is not null))
 );
 
-comment on table leave_requests is 'Time off, requested and answered. Approval is attributed by constraint — silent approval is how a prayer week ends up uncovered.';
+comment on table leave_requests is 'Time off, requested and answered. Approval is attributed by constraint — silent approval is how a week ends up uncovered.';
 
 create index leave_staff_idx on leave_requests (staff_id, from_date desc);
 create index leave_pending_idx on leave_requests (status) where status = 'requested';

@@ -1,25 +1,18 @@
 -- ============================================================
--- Stock, shopping, meals and waste.
+-- Stock, shopping, meals and waste. The heart of the app.
 --
--- Two flags on inventory carry rules from the running sheet that exist
--- nowhere else in the schema, and both of them matter more than they
--- look:
+-- The shape that matters is stock and shopping being two tables and not
+-- one. inventory_items is what the house has; shopping_items is what
+-- somebody is going to buy. A line can exist on the buy list without
+-- being tracked stock — Rosie writes "coriander" and it is a line —
+-- and a tracked item can fall below its minimum without anybody having
+-- written anything, which is what sweep_stock in
+-- 20260828001500_functions_cron.sql exists to catch.
 --
---   prayer_item — brought for prayer, marked on the lid, and never used
---   for consumption. A prayer-marked litre of milk is not a litre of
---   milk you have. If a container is not marked, the sheet says treat
---   it as prayer stock and ask.
---
---   shrine_only — the shrine cloth and the shrine sponge. The cloth
---   never meets a spray or a chemical; the sponge never meets meat or
---   the normal washing-up. If either cannot be found, the instruction
---   is to say so and wait, not to substitute.
---
--- meals carries the food rule. During the observance nothing on the
--- menu may contain meat, fish or eggs, and that is checked in the app
--- before a meal can be approved (src/lib/foodrule.ts). It is not
--- checked here, because the rule has dates and this table does not know
--- them — see the approval trigger at the foot of this file, which does.
+-- inventory_movements is append-only and inventory_items.qty is a cache
+-- of it. Two people counting the same shelf on two phones produce two
+-- rows and both are kept; a single qty column reconciled by last-write
+-- would quietly lose one.
 -- ============================================================
 
 
@@ -56,28 +49,18 @@ create table inventory_items (
   recurring boolean not null default false,
   vendor_id uuid,
   notes text not null default '',
-  -- R6. Brought for prayer, marked, and never used for consumption.
-  prayer_item boolean not null default false,
-  -- R7. The shrine cloth and the shrine sponge. Never meat, never chemicals.
-  shrine_only boolean not null default false,
   active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint inventory_qty_not_negative check (qty >= 0),
-  constraint inventory_min_not_negative check (min_qty >= 0),
-  -- Nothing is both brought for prayer and a shrine cleaning item. One
-  -- is consumed and set aside; the other is equipment.
-  constraint inventory_flags_exclusive check (not (prayer_item and shrine_only))
+  constraint inventory_min_not_negative check (min_qty >= 0)
 );
 
-comment on table inventory_items is 'Everything counted. Two flags carry rules from the running sheet: prayer_item and shrine_only.';
-comment on column inventory_items.prayer_item is 'R6. Marked and never used for consumption. Excluded from what counts as available.';
-comment on column inventory_items.shrine_only is 'R7. The shrine cloth and sponge. Never a spray, never meat, never substituted.';
-comment on column inventory_items.min_qty is 'Below this it lands on the shopping list. Divo oil sits at 2 for a reason — it burns down over about three days.';
+comment on table inventory_items is 'Everything counted. qty is a cache of inventory_movements; min_qty is what puts a line on the buy list without anyone having to notice.';
+comment on column inventory_items.min_qty is 'Below this it lands on the shopping list. Set it at what you want left when the next shop happens, not at zero.';
 
 create index inventory_category_idx on inventory_items (category_id) where active;
 create index inventory_low_idx on inventory_items (qty) where active;
-create index inventory_prayer_idx on inventory_items (prayer_item) where prayer_item;
 
 create trigger inventory_items_touch before update on inventory_items
   for each row execute function touch_updated_at();
@@ -148,9 +131,10 @@ create table shopping_items (
   cost numeric(12, 2),
   vendor_id uuid,
   notes text not null default '',
-  -- The three rows printed on every running sheet: the daily milk and
-  -- yoghurt, the divo oil, and the flowers, incense, matches and wicks.
-  -- Standing rows are never cleared off the list.
+  -- The things bought on a rhythm rather than because they ran out —
+  -- the daily milk and bread, the weekly vegetables. Marking a standing
+  -- row purchased records the run; it does not take the row off the
+  -- list, because it will be needed again tomorrow.
   standing boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -158,8 +142,8 @@ create table shopping_items (
     check ((status = 'purchased') = (purchased_at is not null))
 );
 
-comment on table shopping_items is 'What needs buying. The three standing rows are printed on every sheet and are never cleared.';
-comment on column shopping_items.standing is 'R12. The milk and yoghurt run, the divo oil, and the flowers, incense, matches and wicks.';
+comment on table shopping_items is 'The buy list. Lines arrive three ways: somebody adds one, an item falls below its minimum, or it is a standing row that is always there.';
+comment on column shopping_items.standing is 'Always on the list. Buying it records the run rather than clearing the row — the daily milk is needed again tomorrow.';
 
 create index shopping_status_idx on shopping_items (status) where status <> 'purchased';
 
@@ -190,7 +174,7 @@ create table meals (
   updated_at timestamptz not null default now(),
   constraint meals_portions_positive check (portions > 0),
   -- Approved means somebody approved it. A menu that approved itself is
-  -- how the wrong food reaches a table on a prayer day.
+  -- how the wrong food reaches a table.
   constraint meals_approval_attributed
     check (status not in ('Approved', 'Prepared', 'Completed') or approved_by is not null),
   -- Changes requested without saying what changes is not feedback.
@@ -199,7 +183,7 @@ create table meals (
 );
 
 comment on table meals is 'The menu, by sitting. Status is a workflow — Draft, Submitted, Approved, Prepared, Completed — and approval is attributed by constraint.';
-comment on column meals.diet is 'What must not be in it. During the observance this reads "vegetarian" and the app enforces it before approval.';
+comment on column meals.diet is 'What must not be in it, for this sitting. Aditya''s portion is vegetarian, so most dinners carry a note here.';
 
 create index meals_date_idx on meals (served_on, serve_at);
 create index meals_status_idx on meals (status) where status in ('Submitted', 'Changes requested');
@@ -223,64 +207,6 @@ comment on table meal_ingredients is 'What a dish needs. Checked against stock w
 
 create index meal_ingredients_meal_idx on meal_ingredients (meal_id);
 create index meal_ingredients_item_idx on meal_ingredients (item_id);
-
-
--- ---------- the food rule, in the database ----------
-
--- The app checks this before it offers the Approve button
--- (src/lib/foodrule.ts). This trigger is the second line, for the same
--- reason every capability is checked twice: a rule that only exists in
--- the interface is a rule that exists until somebody uses the API.
---
--- Deliberately narrow. It fires on approval only, not on drafting —
--- writing down a dish to think about is not the same as putting it on
--- the table, and a cook typing "no eggs" into the diet note should not
--- be fought with.
-create or replace function enforce_food_rule() returns trigger
-language plpgsql
-set search_path = public, pg_catalog
-as $$
-declare
-  banned constant text :=
-    '\y(chicken|murgh|lamb|mutton|gosht|beef|steak|veal|pork|bacon|ham|gammon|sausage|chorizo|pepperoni|salami|duck|turkey|quail|fish|salmon|tuna|cod|hamour|sardine|anchovy|prawn|shrimp|crab|lobster|squid|calamari|shellfish|egg|eggs|omelette|shakshuka|meringue|mince|keema|kofta|kebab|gelatin|gelatine)\y';
-  s settings%rowtype;
-  offending text;
-begin
-  if new.status not in ('Approved', 'Prepared', 'Completed') then
-    return new;
-  end if;
-
-  select * into s from settings limit 1;
-  if s.observance_from is null
-     or new.served_on < s.observance_from
-     or new.served_on > s.observance_to then
-    return new;
-  end if;
-
-  select string_agg(hit, ', ')
-    into offending
-    from (
-      select new.name as hit where new.name ~* banned
-      union all
-      select i.name from meal_ingredients i where i.meal_id = new.id and i.name ~* banned
-    ) t;
-
-  if offending is not null then
-    raise exception
-      'FOOD RULE — THIS IS NOT OPTIONAL. % falls inside the observance (% to %), and this menu has: %. All food is vegetarian: no meat, no fish, no eggs. Milk, cheese, yoghurt and butter are fine.',
-      new.served_on, s.observance_from, s.observance_to, offending
-      using errcode = 'check_violation';
-  end if;
-
-  return new;
-end;
-$$;
-
-comment on function enforce_food_rule() is
-  'Refuses to approve a meal containing meat, fish or eggs on a date inside the observance. The second of two checks; the first is in the app, before the button is offered.';
-
-create trigger meals_food_rule before insert or update on meals
-  for each row execute function enforce_food_rule();
 
 
 -- ---------- waste ----------

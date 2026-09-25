@@ -112,8 +112,8 @@ create table task_instances (
   id uuid primary key default gen_random_uuid(),
   date date not null,
   -- Set null, not cascade. A library task can be retired or rewritten
-  -- at any time; the record that someone cleaned the shrine on the 9th
-  -- day of the Prayer must survive that.
+  -- at any time; the record that someone cleaned a particular room on a
+  -- particular morning must survive that.
   library_id text references library_tasks (id) on delete set null,
   category_id text not null references task_categories (id) on delete restrict,
   title text not null,
@@ -259,7 +259,7 @@ create table shifts (
   constraint shifts_day_off_range check (day_off between 0 and 6)
 );
 
-comment on table shifts is 'The standing pattern — which days, which hours, which day off. Reza is 14:00 to 22:00; Jagdishbhai is 15:00 to 17:00.';
+comment on table shifts is 'The standing pattern — which days, which hours, which day off. Rosie is 07:00 to 19:00 with Monday off; Marvin is 08:00 to 18:00 with Wednesday off.';
 comment on column shifts.staff_id is 'Cascades: a shift pattern is part of the person''s setup and has no life without them.';
 comment on column shifts.days is 'Days of week worked, 0 = Sunday.';
 comment on column shifts.end_time is 'May be earlier than start_time for a shift that crosses midnight, so no window check here.';
@@ -309,7 +309,7 @@ create table coverage_rules (
   constraint coverage_rules_zone_allowed check (zone in ('household', 'any'))
 );
 
-comment on table coverage_rules is 'Who picks up a role when its holder is off. The cook''s work falls to Rosie; the priests'' care falls to Earl.';
+comment on table coverage_rules is 'Who picks up a role when its holder is off. Rosie''s work falls to Marvin; the driving falls to Earl, because nobody else in the house drives.';
 comment on column coverage_rules.cover_staff_id is 'Restrict on delete: a rule pointing at nobody is a coverage gap that nothing would flag.';
 
 create index coverage_rules_role_idx on coverage_rules (role);

@@ -132,7 +132,7 @@ create table visitors (
   constraint visitors_departure_after_arrival check (departed is null or departed >= arrived)
 );
 
-comment on table visitors is 'Who came, when, and whether they left. During the prayers this is a long list, which is exactly when it matters.';
+comment on table visitors is 'Who came, when, and whether they left. The value is in the open entries — somebody signed in at nine and never signed out.';
 comment on column visitors.departed is 'Null means still on site. The screen counts those, because an open entry at midnight is the thing worth seeing.';
 
 create index visitors_open_idx on visitors (visited_on) where departed is null;

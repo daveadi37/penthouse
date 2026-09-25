@@ -1,15 +1,15 @@
 import React from 'react';
 import { useStore, useUser } from '@/store';
 import { can } from '@/lib/access';
-import { breachSentence, foodRuleBreaches, underFoodRule } from '@/lib/foodrule';
 import { detailId, useRoute, navigate } from '@/lib/router';
 import { addDays, fmt, fmtShort, fmtTime12, timeAgo, today as todayStr, weekStart, DOW_SHORT, pd } from '@/lib/date';
 import { money, plural } from '@/lib/format';
-import { awaitingApproval, ingredientStatus, mealsOn } from '@/lib/selectors';
+import { awaitingApproval, householdMembers, ingredientStatus, mealsOn } from '@/lib/selectors';
 import { MEAL_STATUSES, MEAL_TYPES } from '@/types';
-import type { Meal, MealIngredient, MealStatus } from '@/types';
+import type { DB, Meal, MealIngredient, MealStatus } from '@/types';
 import {
   Btn,
+  Callout,
   Card,
   Chip,
   Empty,
@@ -30,6 +30,24 @@ import {
 
 function statusTone(s: MealStatus) {
   return s === 'Submitted' ? 'low' : s === 'Changes requested' ? 'urgent' : s === 'Approved' ? 'info' : s === 'Completed' || s === 'Prepared' ? 'ok' : 'plain';
+}
+
+/**
+ * Who in the house eats differently, one line each.
+ *
+ * This lives here rather than in selectors.ts because the kitchen is the
+ * only screen that asks, and because a diet is free text on a profile
+ * rather than a table to query — the moment it is a dropdown, somebody's
+ * real requirement is missing from it.
+ *
+ * It is shown and never enforced. A menu is never refused: the person
+ * cooking knows things the app does not, and an app that blocks the
+ * Approve button at seven in the evening just gets worked around.
+ */
+export function dietNotes(db: DB): string[] {
+  return householdMembers(db)
+    .filter((p) => p.diet && p.diet.trim())
+    .map((p) => `${p.name.split(' ')[0]} — ${p.diet!.trim()}`);
 }
 
 export function Cooking() {
@@ -246,7 +264,7 @@ function MealDetail({ id }: { id: string }) {
   const advance = (status: MealStatus, extra: Record<string, unknown> = {}) => {
     patch('meals', m.id, { status, ...extra }, `Moved to ${status}`);
     if (status === 'Submitted') {
-      notify({ profileId: 'p-mgr', kind: 'meal_approval', title: 'A meal needs approval', body: `${m.type}: ${m.name}`, url: `#/cooking/${m.id}`, priority: 'normal' });
+      notify({ profileId: 'p-earl', kind: 'meal_approval', title: 'A meal needs approval', body: `${m.type}: ${m.name}`, url: `#/cooking/${m.id}`, priority: 'normal' });
     }
     if (status === 'Approved' || status === 'Changes requested') {
       notify({ profileId: m.by, kind: 'issue_update', title: status === 'Approved' ? 'Menu approved' : 'Changes requested', body: `${m.type}: ${m.name}`, url: `#/cooking/${m.id}`, priority: 'normal' });
@@ -255,13 +273,7 @@ function MealDetail({ id }: { id: string }) {
 
   const missing = m.ingredients.filter((g) => ingredientStatus(db, g.name) === 'low');
   const unknown = m.ingredients.filter((g) => ingredientStatus(db, g.name) === 'unknown');
-
-  /* THIS IS NOT OPTIONAL, says the sheet. So it is not optional here
-     either: a meal that breaks the food rule cannot be approved while
-     the observance is running. */
-  const ruleApplies = underFoodRule(db.settings, m.date);
-  const breaches = ruleApplies ? foodRuleBreaches(m) : [];
-  const blocked = breaches.length > 0;
+  const diets = dietNotes(db);
 
   return (
     <>
@@ -275,8 +287,8 @@ function MealDetail({ id }: { id: string }) {
             {canEdit && <Btn size="sm" variant="ghost" onClick={() => openSheet('meal-edit', m.id)}>Edit</Btn>}
             {m.status === 'Draft' && canEdit && <Btn size="sm" onClick={() => advance('Submitted')}>Submit for approval</Btn>}
             {m.status === 'Submitted' && canApprove && (
-              <Btn size="sm" disabled={blocked} onClick={() => advance('Approved', { approvedBy: user.id, feedback: '' })}>
-                {blocked ? 'Cannot be approved' : 'Approve'}
+              <Btn size="sm" onClick={() => advance('Approved', { approvedBy: user.id, feedback: '' })}>
+                Approve
               </Btn>
             )}
             {m.status === 'Approved' && canEdit && <Btn size="sm" variant="soft" onClick={() => advance('Prepared')}>Mark prepared</Btn>}
@@ -292,19 +304,12 @@ function MealDetail({ id }: { id: string }) {
         {m.approvedBy && <Chip tone="ok">Approved by {db.profiles.find((p) => p.id === m.approvedBy)?.name}</Chip>}
       </div>
 
-      {blocked && (
+      {diets.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <Card className="callout crit" pad={false} style={{ padding: '14px 17px' }}>
-            <div className="eyebrow">Food rule — this is not optional</div>
-            <div style={{ marginTop: 5, fontSize: 15, lineHeight: 1.45 }}>
-              This menu has <strong>{breachSentence(breaches)}</strong>, and {fmt(m.date)} is inside the
-              observance. All food is vegetarian until {fmt(db.settings.observanceWindow!.to)} — no meat, no
-              fish, no eggs. Milk, cheese, yoghurt and butter are fine; onion and garlic are fine.
-            </div>
-            <div className="muted" style={{ marginTop: 7, fontSize: 13.5 }}>
-              It cannot be approved as it stands. Change the dish, or ask Aditya before you do anything else.
-            </div>
-          </Card>
+          <Callout title="Who eats differently">
+            {diets.join(' · ')}. One portion each, on every menu. Nothing here stops the meal being
+            approved — it is what the kitchen needs to know, not a rule the app enforces.
+          </Callout>
         </div>
       )}
 
@@ -561,7 +566,7 @@ export function MealSheet({ id }: { id?: string }) {
       <Field label="Cooking notes">
         <textarea className="in" rows={2} value={f.cook ?? ''} onChange={(e) => set('cook', e.target.value)} />
       </Field>
-      <Field label="Dietary" hint="These change. No pork in the house; Salyna avoids shellfish.">
+      <Field label="Dietary" hint="Anything about this particular meal. Standing needs are on people's profiles and shown above the menu.">
         <textarea className="in" rows={2} value={f.diet ?? ''} onChange={(e) => set('diet', e.target.value)} />
       </Field>
     </Sheet>

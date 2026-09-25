@@ -6,14 +6,12 @@ import {progress} from '@/lib/schedule';
 import {staffList} from '@/lib/selectors';
 import type { TaskInstance } from '@/types';
 import {Avatar, Btn, Card, Chip, DateNav, Empty, Field, Group, Meter, PageHead, Seg, Select, Sheet, Text, ZoneChip, cx} from '@/components/ui';
-import {ZoneFilterBar} from '@/components/Shell';
 
 export function Checklist() {
   const user = useUser();
   const db = useStore((s) => s.db);
   const date = useStore((s) => s.date);
   const setDate = useStore((s) => s.setDate);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   const ensureDay = useStore((s) => s.ensureDay);
   const toggleTask = useStore((s) => s.toggleTask);
   const markAllInGroup = useStore((s) => s.markAllInGroup);
@@ -32,7 +30,6 @@ export function Checklist() {
   const effectiveWho = isStaff ? user.id : who;
 
   let tasks = all;
-  if (zoneFilter !== 'all') tasks = tasks.filter((t) => t.zone === zoneFilter);
   if (effectiveWho !== 'all') tasks = tasks.filter((t) => t.assignedTo === effectiveWho);
   const visible = show === 'todo' ? tasks.filter((t) => !t.done) : tasks;
 
@@ -70,7 +67,6 @@ export function Checklist() {
       />
 
       <div className="row wrap" style={{ gap: 8, marginBottom: 14 }}>
-        <ZoneFilterBar />
         <Seg
           value={show}
           onChange={setShow}

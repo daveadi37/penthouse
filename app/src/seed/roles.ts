@@ -16,7 +16,6 @@ import type { Capability, RoleDef } from '@/types';
 
 const ALL: Capability[] = [
   'day.view', 'day.tick', 'day.assign', 'library.edit',
-  'sheet.view', 'sheet.edit', 'sheet.check', 'sheet.post',
   'issue.raise', 'issue.viewAll', 'issue.manage',
   'inventory.view', 'inventory.edit',
   'cooking.view', 'cooking.edit', 'cooking.approve',
@@ -25,7 +24,7 @@ const ALL: Capability[] = [
   'register.view', 'register.edit',
   'people.view', 'people.manage',
   'occasions.view', 'occasions.edit',
-  'shrine.view', 'shrine.log',
+  'chat.view', 'chat.post',
   'documents.view', 'documents.viewOwner',
   'settings.edit', 'roles.manage', 'accounts.manage', 'audit.view',
 ];
@@ -56,10 +55,9 @@ export const SEED_ROLES: RoleDef[] = [
     name: 'House manager',
     rank: 70,
     description:
-      'In charge of the day. Checks the running sheet before it goes out, assigns the work, closes issues. Sees household spending but not the owner’s.',
+      'In charge of the day. Assigns the work, keeps the buy list honest, closes issues. Sees household spending but not the owner’s.',
     capabilities: [
       'day.view', 'day.tick', 'day.assign', 'library.edit',
-      'sheet.view', 'sheet.edit', 'sheet.check', 'sheet.post',
       'issue.raise', 'issue.viewAll', 'issue.manage',
       'inventory.view', 'inventory.edit',
       'cooking.view', 'cooking.edit', 'cooking.approve',
@@ -68,7 +66,7 @@ export const SEED_ROLES: RoleDef[] = [
       'register.view', 'register.edit',
       'people.view', 'people.manage',
       'occasions.view', 'occasions.edit',
-      'shrine.view', 'shrine.log',
+      'chat.view', 'chat.post',
       'documents.view',
       'audit.view',
     ],
@@ -80,16 +78,15 @@ export const SEED_ROLES: RoleDef[] = [
     name: 'Staff',
     rank: 50,
     description:
-      'Lives the day. Ticks the work off, fills the sheet in, counts the stock, logs the divo, reports anything broken.',
+      'Lives the day. Marvin and Rosie. Ticks the work off, counts the stock and marks what has been bought, reports anything broken, and is in the house chat like everyone else.',
     capabilities: [
       'day.view', 'day.tick',
-      'sheet.view', 'sheet.edit', 'sheet.post',
       'issue.raise', 'issue.viewAll',
       'inventory.view', 'inventory.edit',
       'cooking.view', 'cooking.edit',
       'register.view', 'register.edit',
       'occasions.view',
-      'shrine.view', 'shrine.log',
+      'chat.view', 'chat.post',
       'documents.view',
     ],
     works: true,
@@ -101,13 +98,13 @@ export const SEED_ROLES: RoleDef[] = [
     name: 'Helper',
     rank: 30,
     description:
-      'Paid by the hour or on site for a session — the cooks, and anyone brought in for an occasion. Sees the day and the sheet, ticks their own work, can say something is wrong.',
+      'Paid by the hour or on site for a session — anyone brought in for an occasion. Sees the day, ticks their own work, can say something is wrong.',
     capabilities: [
       'day.view', 'day.tick',
-      'sheet.view',
       'issue.raise',
       'inventory.view',
       'cooking.view',
+      'chat.view', 'chat.post',
     ],
     works: true,
     system: true,
@@ -118,14 +115,13 @@ export const SEED_ROLES: RoleDef[] = [
     name: 'Family',
     rank: 20,
     description:
-      'Lives here and is not staff. Reads the sheet, sees what is happening, can say something is broken. No staff records, no money.',
+      'Lives here and is not staff. Sees what is happening, can say something is broken, and is in the house chat. No staff records, no money.',
     capabilities: [
       'day.view',
-      'sheet.view',
       'issue.raise',
       'cooking.view',
       'occasions.view',
-      'shrine.view',
+      'chat.view', 'chat.post',
     ],
     system: true,
     active: true,

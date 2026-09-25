@@ -1,5 +1,6 @@
 import React from 'react';
 import { useStore, useUser } from '@/store';
+import { can } from '@/lib/access';
 import { navigate, useRoute } from '@/lib/router';
 import { addDays, daysUntil, fmt, fmtShort, fmtTime12, today as todayStr } from '@/lib/date';
 import { plural } from '@/lib/format';
@@ -160,7 +161,8 @@ function OccasionTasks({
   onAdd?: () => void;
 }) {
   const user = useUser();
-  const canEdit = user.role === 'owner' || user.role === 'manager';
+  const db = useStore((s) => s.db);
+  const canEdit = can(db, user, 'occasions.edit');
   const sorted = sortByOffset(tasks);
   const byDate = new Map<string, OccasionTask[]>();
   sorted.forEach((t) => {
@@ -194,7 +196,7 @@ function OccasionTasks({
                   <span>{offsetLabel(t.offset)}</span>
                   <span>{t.estMinutes}m</span>
                   <Chip tone="plain">{t.role}</Chip>
-                  {t.done && t.doneBy && <Chip tone="ok">by {profileName(useStore.getState().db, t.doneBy)}</Chip>}
+                  {t.done && t.doneBy && <Chip tone="ok">by {profileName(db, t.doneBy)}</Chip>}
                 </span>
               </span>
               {canEdit && onEdit && <IconBtn label="Edit" onClick={() => onEdit(t.id)}>✎</IconBtn>}
@@ -216,7 +218,7 @@ function GuestDetail({ id }: { id: string }) {
   const openSheet = useStore((s) => s.openSheet);
   const g = db.guests.find((x) => x.id === id);
   if (!g) return <Empty title="No such guest" />;
-  const canEdit = user.role === 'owner' || user.role === 'manager';
+  const canEdit = can(db, user, 'occasions.edit');
 
   const toggle = (tid: string) =>
     patch('guests', g.id, {
@@ -514,7 +516,7 @@ export function EventSheet({ id }: { id?: string }) {
   return (
     <Sheet
       title={existing ? existing.name : 'New event'}
-      sub="A dinner, a birthday or a day of the observance — the same offset engine runs all of them."
+      sub="A dinner, a birthday or a weekend of guests — the same offset engine runs all of them."
       onClose={closeSheet}
       footer={
         <>

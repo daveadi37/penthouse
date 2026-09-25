@@ -161,8 +161,8 @@ export const SEED_LIBRARY: LibraryTask[] = [
 
   /* ---------- household admin ---------- */
   ...T({ categoryId: 'c-household', apply: 'global', zone: 'any', freq: 'weekly', dow: 0, estMinutes: 30, order: 0,
-    instructions: 'Both zones, separately. Anything below its minimum goes onto the list the same day.' },
-    ['Full inventory count — kitchen and cleaning', 'Full inventory count — prayer and shrine stock']),
+    instructions: 'Anything below its minimum goes onto the buy list the same day, not the day of the shop.' },
+    ['Full inventory count — kitchen, cleaning and the cat']),
   ...T({ categoryId: 'c-household', apply: 'global', zone: 'household', freq: 'weekly', dow: 5, estMinutes: 20, order: 10 },
     ['Linen count and rotation check', 'Retire anything thin, greying or stained']),
   ...T({ categoryId: 'c-household', apply: 'global', zone: 'household', role: 'driver', freq: 'weekdays', defaultTime: '07:20', estMinutes: 40, order: 20,
@@ -204,7 +204,7 @@ export const SEED_PROCEDURES: Procedure[] = [
   P({
     id: 'sop-bath-daily', title: 'Bathroom Daily Clean', category: 'Household cleaning',
     purpose: 'Keep every bathroom fresh, dry and presentable at all times of day.',
-    frequency: 'Daily — every bathroom. The guest toilet gets an additional midday pass, and every twenty minutes while the prayers run.',
+    frequency: 'Daily — every bathroom. The guest toilet gets an additional midday pass.',
     supplies: 'Toilet cleaner, disinfectant, glass cleaner, colour-coded bathroom cloths, non-scratch sponge, mop.',
     steps: [
       'Ventilate first — open the window or run the extractor.',
@@ -218,7 +218,7 @@ export const SEED_PROCEDURES: Procedure[] = [
       'Empty the bin, sweep or vacuum, then mop the floor and leave it dry.',
     ],
     standard: 'Dry, odour-free, no water marks on glass or metal, towels aligned, no product bottles out of position.',
-    watchFor: 'Water spots on taps and glass. Hair in the drain or on the floor edges. Damp towels left folded. During a sitting the guest toilet runs out of paper by the second break if the twenty-minute round is skipped.',
+    watchFor: 'Water spots on taps and glass. Hair in the drain or on the floor edges. Damp towels left folded. The guest toilet runs through paper faster than any other room — check the spare before you leave it.',
   }),
   P({
     id: 'sop-kitchen', title: 'Family Kitchen', category: 'Household cleaning', zone: 'household',
@@ -314,19 +314,19 @@ export const SEED_PROCEDURES: Procedure[] = [
   }),
   P({
     id: 'sop-inventory', title: 'Inventory', category: 'Household', zone: 'any',
-    purpose: 'The house never runs out of anything essential — and never runs out of divo oil, which is not the same sentence.',
-    frequency: 'Update quantities as you use things. Full count weekly on Sunday, both zones separately.',
+    purpose: 'The house never runs out of anything essential, and nothing is a surprise on the morning of the shop.',
+    frequency: 'Update quantities as you use things. Full count weekly on Sunday.',
     supplies: 'The Inventory screen.',
     steps: [
       'Update the quantity when you open the last of something, not when it runs out.',
       'Anything below its minimum level moves automatically onto the shopping list.',
-      'Count prayer and shrine stock separately from the kitchen. Prayer-marked items are not available to use, so they do not count as stock you have.',
+      'Count what is actually there, not what the screen says. A count that agrees with a wrong number is worse than no count.',
       'Do a full count every Sunday and correct the numbers.',
       'Add a note to any item that needs a specific brand or size.',
       'Tell the house manager immediately about anything urgent rather than waiting for the weekly list.',
     ],
     standard: 'Nothing on the shopping list is a surprise. No essential item ever reaches zero.',
-    watchFor: 'During the observance the divo oil, wicks, matches, flowers and incense run down far faster than anything else — the divo alone is about a bottle every three days. Milk and yoghurt are bought daily. Ken’s litter and food also go faster than expected.',
+    watchFor: 'Milk and yoghurt are bought daily, so they never look low on the screen and still run out. Ken’s litter and food go faster than expected, particularly in summer.',
   }),
   P({
     id: 'sop-maintenance', title: 'Reporting a Fault', category: 'Maintenance', zone: 'any',
@@ -348,7 +348,7 @@ export const SEED_PROCEDURES: Procedure[] = [
     id: 'sop-products', title: 'Cleaning Product Guide', category: 'Reference', zone: 'any',
     purpose: 'The right product on the right surface — the wrong one causes permanent damage.',
     frequency: 'Reference as needed.',
-    supplies: 'All cleaning products. The shrine cloth and the shrine sponge are not among them and never leave the shrine.',
+    supplies: 'All cleaning products. The cat’s bowl sponge is not among them and is never used on anything else.',
     steps: [
       'Cloths are colour-coded: bathroom cloths are never used in the kitchen or on bedroom surfaces.',
       'Natural stone and marble: pH-neutral cleaner only. Never vinegar, never descaler, never anything acidic.',

@@ -120,13 +120,13 @@ export const SEED_VEHICLES: Vehicle[] = [
   },
   {
     id: 'veh2', name: 'Errands car', make: 'Toyota', model: 'Corolla', year: '2021',
-    plate: 'Dubai K 77410', vin: 'JTDBR32E30J098765', zone: 'household', assignedTo: 'p-reza',
+    plate: 'Dubai K 77410', vin: 'JTDBR32E30J098765', zone: 'household', assignedTo: 'p-marvin',
     colour: 'White', odometer: 78900,
     registrationExpiry: addDays(t, 118), insuranceExpiry: addDays(t, -6),
     insuranceProvider: 'Oman Insurance', policyNo: 'OI-MOT-33110',
     serviceFreqDays: 180, serviceFreqKm: 10000,
     serviceLast: addDays(t, -215), serviceLastKm: 71000, serviceNext: addDays(t, -35),
-    notes: 'Groceries, the morning milk run, airport drops. Insurance lapsed — do not drive.',
+    notes: 'The grocery run, the daily milk run and airport drops. Insurance lapsed — do not drive it until it is renewed.',
     log: [
       { id: uid('vl'), date: addDays(t, -5), type: 'Fuel', odometer: 78800, cost: 165, notes: '' },
       { id: uid('vl'), date: addDays(t, -215), type: 'Service', odometer: 71000, cost: 720, vendorId: 'v-veh', notes: 'Oil, filters, tyre rotation.' },
@@ -136,9 +136,9 @@ export const SEED_VEHICLES: Vehicle[] = [
 ];
 
 export const SEED_CONTRACTS: ServiceContract[] = [
-  { id: 'sc1', name: 'AC servicing — whole premises', cat: 'AC', vendorId: 'v-ac', zone: 'household', freqDays: 90, last: addDays(t, -75), next: addDays(t, 15), costPerVisit: 1200, contractStart: addDays(t, -400), contractEnd: addDays(t, 330), documentIds: [], notes: 'All eleven units. Filters cleaned, gas checked. The prayer area unit gets priority — it is over the mats and the priests sit under it.', active: true },
+  { id: 'sc1', name: 'AC servicing — whole premises', cat: 'AC', vendorId: 'v-ac', zone: 'household', freqDays: 90, last: addDays(t, -75), next: addDays(t, 15), costPerVisit: 1200, contractStart: addDays(t, -400), contractEnd: addDays(t, 330), documentIds: [], notes: 'All eleven units. Filters cleaned, gas checked. The bedroom units first — they are the ones anyone notices.', active: true },
   { id: 'sc2', name: 'Water tank cleaning', cat: 'Water tank', vendorId: 'v-water', zone: 'household', freqDays: 180, last: addDays(t, -170), next: addDays(t, 10), costPerVisit: 800, contractStart: addDays(t, -540), contractEnd: addDays(t, 190), documentIds: [], notes: 'Municipality requirement. Certificate must be kept.', active: true },
-  { id: 'sc3', name: 'Pest control', cat: 'Pest control', vendorId: 'v-pest', zone: 'household', freqDays: 90, last: addDays(t, -88), next: addDays(t, 2), costPerVisit: 450, contractStart: addDays(t, -450), contractEnd: addDays(t, 280), documentIds: [], notes: 'Kitchen, bathrooms and store. Never during the prayers, and never in the shrine.', active: true },
+  { id: 'sc3', name: 'Pest control', cat: 'Pest control', vendorId: 'v-pest', zone: 'household', freqDays: 90, last: addDays(t, -88), next: addDays(t, 2), costPerVisit: 450, contractStart: addDays(t, -450), contractEnd: addDays(t, 280), documentIds: [], notes: 'Kitchen, bathrooms and store. Out of hours, and everything food-related covered or moved first.', active: true },
   { id: 'sc4', name: 'Pool & terrace water', cat: 'Pool', vendorId: 'v-bldg', zone: 'household', freqDays: 14, last: addDays(t, -9), next: addDays(t, 5), costPerVisit: 0, contractStart: addDays(t, -900), contractEnd: '', documentIds: [], notes: 'Building management. Water only — terrace surfaces are ours.', active: true },
   { id: 'sc5', name: 'Fire safety inspection', cat: 'Fire safety', vendorId: 'v-bldg', zone: 'household', freqDays: 365, last: addDays(t, -300), next: addDays(t, 65), costPerVisit: 0, contractStart: addDays(t, -1000), contractEnd: '', documentIds: [], notes: 'Building-wide. Extinguishers and detectors in both zones.', active: true },
   { id: 'sc6', name: 'Window & facade cleaning', cat: 'Windows', vendorId: 'v-window', zone: 'household', freqDays: 60, last: addDays(t, -52), next: addDays(t, 8), costPerVisit: 950, contractStart: addDays(t, -380), contractEnd: addDays(t, 350), documentIds: [], notes: 'External only. Access via building. Terrace glass included.', active: true },

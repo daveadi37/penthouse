@@ -66,7 +66,7 @@ export const SEED_GUESTS: Guest[] = [
   },
   {
     id: 'g2', name: 'Jonah & Tess Whitfield', arrival: addDays(t, 16), arrivalTime: '14:00', departure: addDays(t, 19),
-    areaId: 'a-br3', notes: 'Old friends from London. The guest room is free by then — Mrs Raman leaves on the 5th. They arrive after the observance ends, so the house is back to normal food.',
+    areaId: 'a-br3', notes: 'Old friends from London. The guest room is free by then — Mrs Raman leaves on the 5th.',
     dietary: 'No shellfish.', status: 'planned', tasks: tasks(GUEST_SPEC),
   },
 ];
@@ -83,7 +83,7 @@ export const SEED_EVENTS: HouseEvent[] = [
 export const SEED_VACATIONS: Vacation[] = [
   {
     id: 'vac1', depart: addDays(t, 34), return: addDays(t, 48),
-    notes: 'Family away two weeks, after the observance ends. Rosie has requested overlapping leave; needs resolving before it is agreed with anyone.',
+    notes: 'Family away two weeks. Rosie has requested overlapping leave; that needs resolving before either is agreed with anyone.',
     status: 'planned',
     preTasks: tasks([
       ['Complete all laundry and put away', 2, 'days', 'before', 90],

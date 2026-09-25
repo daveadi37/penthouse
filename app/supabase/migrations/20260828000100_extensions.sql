@@ -11,9 +11,9 @@
 -- this schema. Without pgcrypto the very next migration fails.
 create extension if not exists pgcrypto;
 
--- The running sheet has to be posted to the 3808 Home group by 09:00,
--- so the sheet reminder, the late flag, the day builder and the expiry
--- sweeps all run on a clock rather than on someone opening the app.
+-- The day builder, the expiry sweeps and the low-stock sweep all have
+-- to run on a clock rather than on somebody opening the app — the work
+-- for tomorrow is built at 05:00 Dubai whether or not anyone is awake.
 -- pg_cron is what holds that clock.
 create extension if not exists pg_cron;
 

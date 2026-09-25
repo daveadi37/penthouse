@@ -5,14 +5,6 @@
    not a modelling change.
    ============================================================ */
 
-import type { DivoLog, Observance, RunningSheet, ShrineCheck } from './prayer';
-
-/* The running sheet is big enough to live in its own file, and is
-   re-exported here so every module still imports types from '@/types'
-   alone. prayer.ts deliberately declares its own ID/DateStr/TimeStr/
-   Stamp aliases so this re-export cannot close a module cycle. */
-export * from './prayer';
-
 export type ID = string;
 /** ISO date, `YYYY-MM-DD`. Never a Date object in stored data. */
 export type DateStr = string;
@@ -51,10 +43,6 @@ export const CAPABILITIES = [
   'day.tick',
   'day.assign',
   'library.edit',
-  'sheet.view',
-  'sheet.edit',
-  'sheet.check',
-  'sheet.post',
   'issue.raise',
   'issue.viewAll',
   'issue.manage',
@@ -73,8 +61,8 @@ export const CAPABILITIES = [
   'people.manage',
   'occasions.view',
   'occasions.edit',
-  'shrine.view',
-  'shrine.log',
+  'chat.view',
+  'chat.post',
   'documents.view',
   'documents.viewOwner',
   'settings.edit',
@@ -91,10 +79,6 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   'day.tick': 'Tick tasks off',
   'day.assign': 'Assign, reschedule and rebuild the day',
   'library.edit': 'Add and edit recurring tasks',
-  'sheet.view': 'Read the running sheet',
-  'sheet.edit': 'Fill the running sheet in',
-  'sheet.check': 'Check the sheet before it goes out',
-  'sheet.post': 'Mark the sheet posted to the group',
   'issue.raise': 'Report a fault or make a request',
   'issue.viewAll': 'See every issue, not only their own',
   'issue.manage': 'Assign, progress and close issues',
@@ -113,8 +97,8 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   'people.manage': 'Staff records, visas, leave and reviews',
   'occasions.view': 'See guests and events',
   'occasions.edit': 'Plan guests and events',
-  'shrine.view': 'See the shrine record',
-  'shrine.log': 'Log the divo and the shrine checks',
+  'chat.view': 'Read the house chat',
+  'chat.post': 'Post to the house chat',
   'documents.view': 'Open documents',
   'documents.viewOwner': 'Open owner-only documents',
   'settings.edit': 'Change how the house is set up',
@@ -131,9 +115,8 @@ export interface RoleDef {
   description: string;
   capabilities: Capability[];
   /**
-   * People in this role do the work: they appear on the rota, tasks route
-   * to them, and they turn up on the running sheet. An owner who also
-   * cooks is still not staff.
+   * People in this role do the work: they appear on the rota and tasks
+   * route to them. An owner who also cooks is still not staff.
    */
   works?: boolean;
   /**
@@ -146,15 +129,13 @@ export interface RoleDef {
 
 /**
  * What a staff member is for. Drives auto-routing of work.
- * `cook` is the two visiting cooks, paid per session and on site for two
- * hours — distinct from `cooking`, which is the everyday kitchen.
- * `priestcare` is Aditya: the priests, and the menu agreed with the cooks.
+ * `cook` is someone brought in for a single session — distinct from
+ * `cooking`, which is the everyday kitchen.
  */
 export type StaffRole =
   | 'housekeeping'
   | 'cooking'
   | 'cook'
-  | 'priestcare'
   | 'driver'
   | 'maintenance'
   | 'any';
@@ -163,7 +144,6 @@ export const STAFF_ROLES: StaffRole[] = [
   'housekeeping',
   'cooking',
   'cook',
-  'priestcare',
   'driver',
   'maintenance',
   'any',
@@ -180,14 +160,22 @@ export interface Profile {
   initials: string;
   active: boolean;
   /**
-   * Whether this person has a login at all. The two visiting cooks and
-   * the priests appear on every sheet and never open the app.
+   * Whether this person has a login at all. The children are in the
+   * rota and in the meal portions and never open the app; so is anyone
+   * brought in for a single occasion.
    */
   canSignIn?: boolean;
   /** The Supabase auth user, once one exists. Empty until one is created. */
   authId?: string;
   /** Household members appear in laundry rotas and meal portions. */
   isHouseholdMember?: boolean;
+  /**
+   * Free text, read by the kitchen when menus are planned. Deliberately
+   * not an enum and not a table: a diet is a sentence a person says, and
+   * the moment it is a dropdown somebody's real requirement is missing
+   * from it.
+   */
+  diet?: string;
 }
 
 /* ---------- premises ---------- */
@@ -197,12 +185,23 @@ export type AreaType =
   | 'bathroom'
   | 'kitchen'
   | 'living'
-  | 'shrine'
-  | 'prayer'
   | 'utility'
   | 'storage'
   | 'outdoor'
   | 'circulation';
+
+/* Typed against the union so a value the database would reject cannot be
+   offered in a picker. */
+export const AREA_TYPES: AreaType[] = [
+  'bedroom',
+  'bathroom',
+  'kitchen',
+  'living',
+  'utility',
+  'storage',
+  'outdoor',
+  'circulation',
+];
 
 export type AreaStatus = 'occupied' | 'guest' | 'unused' | 'active';
 
@@ -461,6 +460,26 @@ export interface Incident {
   followUpIssueId?: ID;
 }
 
+/* ---------- the house chat ---------- */
+
+/**
+ * One message in the single house-wide thread. There is one thread on
+ * purpose: anything Marvin or Rosie needs told is the same thing the
+ * family needs told, and a message that lands in the wrong room is a
+ * message nobody acted on. Pinning is how a standing instruction stays
+ * at the top instead of being retyped every week.
+ */
+export interface ChatMessage {
+  id: ID;
+  by: ID;
+  at: Stamp;
+  text: string;
+  pinned?: boolean;
+  pinnedBy?: ID;
+  /** Data URL locally; a storage path once the backend is wired. */
+  photo?: string;
+}
+
 /* ---------- supplies ---------- */
 
 export interface InventoryCategory {
@@ -482,10 +501,6 @@ export interface InventoryItem {
   recurring: boolean;
   vendorId?: ID;
   notes: string;
-  /** Brought for prayer — marked, and never used for consumption (R6). */
-  prayerItem?: boolean;
-  /** Shrine cloth, shrine sponge. Never meat, never chemicals (R7). */
-  shrineOnly?: boolean;
   active: boolean;
 }
 
@@ -1150,7 +1165,8 @@ export type NotifKind =
   | 'expiry'
   | 'coverage_gap'
   | 'delivery'
-  | 'incident';
+  | 'incident'
+  | 'chat';
 
 export type NotifClass = 'assigned' | 'reminder' | 'escalation' | 'response';
 
@@ -1167,6 +1183,7 @@ export const NOTIF_CLASS_OF: Record<NotifKind, NotifClass> = {
   coverage_gap: 'escalation',
   delivery: 'response',
   incident: 'escalation',
+  chat: 'response',
 };
 
 export interface Notification {
@@ -1218,22 +1235,13 @@ export interface AuditEntry {
 
 export interface Settings {
   house: string;
-  /** Printed on every running sheet. */
   address: string;
-  /** Where the sheet is posted each morning. */
-  whatsappGroup: string;
-  /** The sheet is late after this. */
-  sheetPostBy: TimeStr;
-  /** Fixed on the printed sheet — Earl checks it before it goes out. */
-  checkedByName: string;
   currency: string;
   locale: string;
   mealTimes: Record<string, TimeStr>;
   portionDefault: number;
   /** Which days count as working days, and the span of the household day. */
   workingWeek: { days: number[]; start: TimeStr; end: TimeStr };
-  /** The observance that owns the running sheet. Outside it, Today leads. */
-  observanceWindow?: { from: DateStr; to: DateStr };
   alertLeadDays: number;
   laundry: LaundryRota;
   laundryStages: string[];
@@ -1256,11 +1264,6 @@ export interface DB {
   library: LibraryTask[];
   /** Materialised days, keyed by date. */
   days: Record<DateStr, TaskInstance[]>;
-  /** The running sheets, one per date. The spine of the prayer day. */
-  sheets: Record<DateStr, RunningSheet>;
-  observances: Observance[];
-  divoLog: DivoLog[];
-  shrineChecks: ShrineCheck[];
   procedures: Procedure[];
   appointments: Appointment[];
   shifts: Shift[];
@@ -1268,6 +1271,7 @@ export interface DB {
   coverage: CoverageRule[];
   issues: Issue[];
   incidents: Incident[];
+  chat: ChatMessage[];
   inventoryCategories: InventoryCategory[];
   inventory: InventoryItem[];
   movements: InventoryMovement[];

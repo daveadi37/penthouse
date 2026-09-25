@@ -12,8 +12,10 @@ import type {
   Issue,
   IssuePriority,
   InventoryItem,
+  MovementReason,
   Profile,
   ServiceContract,
+  ShoppingItem,
   TaskInstance,
   Vehicle,
   Zone,
@@ -93,11 +95,22 @@ export const belowMin = (db: DB): InventoryItem[] =>
 export const atZero = (db: DB): InventoryItem[] =>
   db.inventory.filter((i) => i.active && i.qty <= 0);
 
-/** Units consumed per week, from the movement log. */
+/**
+ * Units consumed per week, from the movement log.
+ *
+ * A stocktake correction is not consumption. Counting mode writes one
+ * every time Rosie walks the cupboard and finds fewer than the app
+ * thought, and left in the sum the first proper count of the year would
+ * read as a week of enormous use — which would then raise every minimum
+ * and put the whole cupboard on the buy list. Only stock that actually
+ * left the house counts.
+ */
+export const CONSUMING: MovementReason[] = ['used', 'wasted', 'transferred'];
+
 export function burnRate(db: DB, itemId: ID, days = 28): number {
   const cutoff = Date.now() - days * 864e5;
   const used = db.movements
-    .filter((m) => m.itemId === itemId && m.at >= cutoff && m.delta < 0)
+    .filter((m) => m.itemId === itemId && m.at >= cutoff && m.delta < 0 && CONSUMING.includes(m.reason))
     .reduce((sum, m) => sum + Math.abs(m.delta), 0);
   return Math.round((used / days) * 7 * 10) / 10;
 }
@@ -310,6 +323,233 @@ export function pettyBalance(db: DB, holderId: ID): number {
   return db.pettyCash
     .filter((p) => p.holderId === holderId)
     .reduce((sum, p) => sum + (p.direction === 'float' ? p.amount : -p.amount), 0);
+}
+
+/* ============================================================
+   The buy list and the shop.
+
+   The shopping screen is the one the house opens most, so the
+   arithmetic behind it sits here rather than inside the component:
+   what to buy, which shelf it came off, what the trip has cost so
+   far, and which budget that lands on. parseList is here too. A list
+   photographed on paper is turned into rows by guessing, and guessing
+   belongs in a pure function where it can be read and corrected
+   rather than buried in a form.
+   ============================================================ */
+
+/** Case and spacing are the whole difference between paper and the database. */
+const sameName = (a: string, b: string): boolean =>
+  a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** How much to buy of something under its level — back up to two weeks' use. */
+export const suggestQty = (i: InventoryItem): number => Math.max(i.min * 2 - i.qty, i.min);
+
+/** The tracked product a written line means, if the house tracks one. */
+export const matchInventory = (db: DB, name: string): InventoryItem | undefined =>
+  db.inventory.find((i) => i.active && sameName(i.name, name));
+
+/** Below minimum and not on the list yet — the gap that bites. */
+export function notOnList(db: DB): InventoryItem[] {
+  const open = shoppingOpen(db);
+  return belowMin(db).filter(
+    (i) => !open.some((s) => (s.itemId ? s.itemId === i.id : sameName(s.name, i.name))),
+  );
+}
+
+/** The product a line on the list refers to, by id first and name second. */
+export const lineItem = (db: DB, line: ShoppingItem): InventoryItem | undefined =>
+  line.itemId ? db.inventory.find((i) => i.id === line.itemId) : matchInventory(db, line.name);
+
+export interface ShopGroup {
+  id: ID;
+  name: string;
+  lines: ShoppingItem[];
+}
+
+/**
+ * What one trip covers: everything still needed, plus whatever has
+ * already gone in the basket today. A line disappearing the moment it is
+ * ticked would leave no way to undo a mis-tap at the till and nothing to
+ * total up, so the morning's ticks stay on screen until the day turns.
+ */
+export function tripLines(db: DB): ShoppingItem[] {
+  const dayStart = new Date(`${today()}T00:00:00`).getTime();
+  return db.shopping.filter((s) => s.status !== 'purchased' || (s.purchasedAt ?? 0) >= dayStart);
+}
+
+/**
+ * The list in the order a shop is walked, which is the order the cupboard
+ * is stacked in — one pass, no doubling back. Anything the house does not
+ * track goes last, because it is the part of the trip that needs thinking
+ * about rather than picking up.
+ */
+export function shopGroups(db: DB, lines: ShoppingItem[] = shoppingOpen(db)): ShopGroup[] {
+  const byCat = new Map<ID, ShoppingItem[]>();
+  const untracked: ShoppingItem[] = [];
+
+  lines.forEach((line) => {
+    const item = lineItem(db, line);
+    if (!item) {
+      untracked.push(line);
+      return;
+    }
+    const found = byCat.get(item.categoryId);
+    if (found) found.push(line);
+    else byCat.set(item.categoryId, [line]);
+  });
+
+  const out: ShopGroup[] = db.inventoryCategories
+    .filter((c) => byCat.has(c.id))
+    .sort((a, b) => a.order - b.order)
+    .map((c) => ({ id: c.id, name: c.name, lines: byCat.get(c.id) ?? [] }));
+
+  if (untracked.length) out.push({ id: 'untracked', name: 'Not tracked in stock', lines: untracked });
+  return out;
+}
+
+/** What the trip has cost so far. A blank price is "not priced yet", not free. */
+export const tripSpend = (lines: ShoppingItem[]): number =>
+  lines.reduce((sum, l) => sum + (l.cost ?? 0), 0);
+
+/**
+ * Which budget a bought thing is charged to.
+ *
+ * Stock categories and expense categories are two separate lists and
+ * nobody is going to keep a mapping table between them in step by hand,
+ * so the join is made once here, by name: the pantry is food, the cat has
+ * a line of its own, and the rest of the house is cleaning and
+ * consumables. Kitchen is deliberately not food — what is stocked under
+ * it is washing-up liquid and foil, not dinner. Something nobody tracks
+ * is food, because an untracked thing on a grocery run almost always is.
+ */
+export function budgetForCategory(db: DB, categoryId?: ID): ID | undefined {
+  const expense = (re: RegExp) =>
+    db.expenseCategories.find((c) => c.active && re.test(c.name.toLowerCase()))?.id;
+  const food = () => expense(/grocer|food/) ?? expense(/other/);
+
+  const name = db.inventoryCategories.find((c) => c.id === categoryId)?.name.toLowerCase();
+  if (!name) return food();
+  if (/\bcats?\b/.test(name)) return expense(/\bcats?\b/) ?? food();
+  if (/pantry|food|grocer/.test(name)) return food();
+  return expense(/clean|consumable/) ?? food();
+}
+
+export const budgetForItem = (db: DB, item?: InventoryItem): ID | undefined =>
+  budgetForCategory(db, item?.categoryId);
+
+export interface SupplySpend {
+  lines: BudgetLine[];
+  budget: number;
+  spent: number;
+  pct: number;
+}
+
+/**
+ * This month's shopping budgets against what has actually gone out. The
+ * lines are derived from the stock categories rather than listed by hand,
+ * so a budget only appears here if the shopping can actually charge to it.
+ */
+export function supplySpend(db: DB, month = monthKey(today()), seeOwner = true): SupplySpend {
+  const ids = new Set<ID>();
+  db.inventoryCategories
+    .filter((c) => c.active)
+    .forEach((c) => {
+      const id = budgetForCategory(db, c.id);
+      if (id) ids.add(id);
+    });
+
+  const lines = budgetLines(db, month, seeOwner).filter((l) => ids.has(l.categoryId));
+  const budget = lines.reduce((s, l) => s + l.budget, 0);
+  const spent = lines.reduce((s, l) => s + l.spent, 0);
+  return { lines, budget, spent, pct: budget ? Math.round((spent / budget) * 100) : 0 };
+}
+
+/* ---------- a written list, turned into rows ---------- */
+
+export interface ParsedLine {
+  name: string;
+  /** Undefined where the line did not say — never guessed at 1. */
+  qty?: number;
+  unit?: string;
+}
+
+/* The units a household actually writes down. Anything not on this list
+   is treated as part of the name, which is why "1st floor bulbs" does not
+   come back as one "st". */
+const UNITS = [
+  'kg', 'kgs', 'g', 'gm', 'gms', 'gram', 'grams',
+  'l', 'ltr', 'ltrs', 'litre', 'litres', 'ml',
+  'pc', 'pcs', 'piece', 'pieces', 'pack', 'packs', 'packet', 'packets',
+  'box', 'boxes', 'bottle', 'bottles', 'tin', 'tins', 'can', 'cans',
+  'jar', 'jars', 'roll', 'rolls', 'bag', 'bags', 'sachet', 'sachets',
+  'tube', 'tubes', 'bar', 'bars', 'dozen', 'set', 'sets',
+  'unit', 'units', 'loaf', 'loaves', 'bunch', 'bunches', 'clove', 'cloves',
+];
+
+const N = '(?<qty>\\d+(?:\\.\\d+)?)';
+/* Longest first, so "500 grams" is not read as 500 "g" followed by "rams". */
+const U = `(?<unit>${[...UNITS].sort((a, b) => b.length - a.length).join('|')})`;
+const NAME = '(?<name>.+?)';
+
+/* Order matters. A quantity can be written at either end of a line, and
+   only one reading of each line can win, so the leading forms are settled
+   before the trailing ones are tried. */
+const PATTERNS: RegExp[] = [
+  // 2kg atta · 500 g atta · 2 kg of atta
+  new RegExp(`^${N}\\s*${U}\\b\\s*(?:of\\s+|x\\s+|-\\s*)?(?<name>.+)$`, 'i'),
+  // 5 x tinned tomatoes
+  new RegExp(`^${N}\\s*(?:x|×|\\*)\\s*(?<name>.+)$`, 'i'),
+  // 12 eggs
+  new RegExp(`^${N}\\s+(?<name>[a-z].*)$`, 'i'),
+  // Tinned tomatoes (6)
+  new RegExp(`^${NAME}\\s*\\(\\s*${N}\\s*${U}?\\s*\\)$`, 'i'),
+  // Toilet roll - 12 · Basmati rice — 5 kg
+  new RegExp(`^${NAME}\\s*[-–—:]\\s*${N}\\s*${U}?$`, 'i'),
+  // Basmati rice 5kg · Atta 2 kg
+  new RegExp(`^${NAME}\\s+${N}\\s*${U}\\b$`, 'i'),
+  // Vim bar x2
+  new RegExp(`^${NAME}\\s*[x×]\\s*${N}$`, 'i'),
+  // Eggs 12
+  new RegExp(`^${NAME}\\s+${N}$`, 'i'),
+];
+
+const tidy = (s: string): string =>
+  s.replace(/\s+/g, ' ').replace(/^[-–—•*:,.\s]+/, '').replace(/[-–—•*:,.\s]+$/, '').trim();
+
+/**
+ * One written line to one row. Returns null for a blank line or a bullet
+ * with nothing after it, so a pasted list keeps its spacing without
+ * producing rows nobody meant.
+ */
+export function parseListLine(raw: string): ParsedLine | null {
+  // A leading bullet or a list number is decoration, not a quantity.
+  const line = tidy(raw.replace(/^\s*(?:[-–—•*]\s+|\d+[.)]\s+)/, ''));
+  if (!line) return null;
+
+  for (const re of PATTERNS) {
+    const found = re.exec(line)?.groups;
+    if (!found) continue;
+    const name = tidy(found.name ?? '');
+    if (!name) continue;
+    return {
+      name,
+      qty: found.qty ? Number(found.qty) : undefined,
+      unit: found.unit ? found.unit.toLowerCase() : undefined,
+    };
+  }
+  return { name: line };
+}
+
+/** A pasted list, one thing per line. Capped so a stray paste of a whole
+    document does not turn into two hundred rows to read through. */
+export function parseList(text: string, max = 200): ParsedLine[] {
+  const out: ParsedLine[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const row = parseListLine(raw);
+    if (row) out.push(row);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 /* ---------- deliveries and traffic ---------- */

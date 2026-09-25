@@ -36,6 +36,16 @@ export function canAny(db: DB, profile: Profile | undefined, ...caps: Capability
   return caps.some((c) => can(db, profile, c));
 }
 
+/**
+ * Does this person do the work? Read from the role's `works` flag — the
+ * same one staffList() reads — so a role the house invents later turns
+ * up on the rota, in the planner columns and on their own record
+ * without anyone editing a list of role names.
+ */
+export function worksHere(db: DB, profile: Profile): boolean {
+  return roleOf(db, profile.role)?.works === true;
+}
+
 export function rankOf(db: DB, profile: Profile | undefined): number {
   if (!profile) return 0;
   return roleOf(db, profile.role)?.rank ?? 0;

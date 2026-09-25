@@ -1,30 +1,25 @@
 import React from 'react';
 import { useStore, useUser } from '@/store';
-import { can } from '@/lib/access';
+import { can, canAny, roleOf } from '@/lib/access';
 import { navigate } from '@/lib/router';
-import { fmt, fmtShort, fmtTime12, greeting, hhmm, today as todayStr, daysUntil, toMinutes } from '@/lib/date';
-import { money, plural, titleCase } from '@/lib/format';
+import { fmt, fmtShort, fmtTime12, greeting, today as todayStr, daysUntil, toMinutes } from '@/lib/date';
+import { money, plural, qty as qtyLabel } from '@/lib/format';
 import { progress, coverageGaps, isWorking, isAbsent } from '@/lib/schedule';
-import {
-  FOOD_RULE,
-  FOOD_RULE_HEADING,
-  FOOTER_RULES,
-  PRAYER_ITEM_RULE,
-  PRAYER_ITEM_RULE_HEADING,
-  SHEET_META,
-} from '@/seed/prayer';
-import type { DB, RunningSheet, StockState } from '@/types';
+import type { DB, InventoryItem, ShoppingItem } from '@/types';
 import {
   activeGuest,
   allAlerts,
+  atZero,
   awaitingApproval,
   belowMin,
   budgetLines,
   billsDue,
+  daysOfCover,
   issuesFor,
   mealsOn,
   openIssues,
   assignedIssues,
+  shoppingOpen,
   spendByZone,
   staffList,
   uncollected,
@@ -39,7 +34,6 @@ import {
   Callout,
   Card,
   Chip,
-  KV,
   Meter,
   PageHead,
   Ring,
@@ -50,233 +44,298 @@ import {
   ZoneChip,
   List,
   Empty,
-  cx,
 } from '@/components/ui';
 
+/**
+ * Which dashboard somebody gets is decided by what they may do, never by
+ * the name of their role. A house that invents a 'night cover' role gets
+ * the right screen on the first day rather than after a release, and the
+ * two roles that used to fall through the bottom of a role switch —
+ * admin and helper — now land somewhere that makes sense.
+ */
 export function Today() {
+  const db = useStore((s) => s.db);
   const user = useUser();
-  switch (user.role) {
-    case 'owner':
-      return <OwnerToday />;
-    case 'manager':
-      return <ManagerToday />;
-    case 'staff':
-      return <StaffToday />;
-    case 'family':
-      return <FamilyToday />;
-    default:
-      return <RequesterToday />;
-  }
+  if (canAny(db, user, 'money.viewOwner', 'settings.edit')) return <OwnerToday />;
+  if (can(db, user, 'day.assign')) return <ManagerToday />;
+  if (roleOf(db, user.role)?.works) return <StaffToday />;
+  return <FamilyToday />;
 }
 
 function useDay() {
   const db = useStore((s) => s.db);
   const date = useStore((s) => s.date);
   const ensureDay = useStore((s) => s.ensureDay);
-  const ensureSheet = useStore((s) => s.ensureSheet);
   React.useEffect(() => {
     ensureDay(date);
-    ensureSheet(date);
-  }, [date, ensureDay, ensureSheet]);
-  return { db, date, tasks: db.days[date] ?? [], sheet: db.sheets[date] };
+  }, [date, ensureDay]);
+  return { db, date, tasks: db.days[date] ?? [] };
 }
 
 /* ============================================================
-   The running sheet, at the top of every dashboard.
+   The buy list, at the top of every dashboard.
 
-   It is the day's actual deliverable — one page, posted to the
-   3808 Home group by 09:00 — so it leads and the zone, issue and
-   stock tiles follow it. Everything below reads off the sheet
-   rather than off the task library, because the sheet is what the
-   house runs to.
+   It is the thing the house actually runs out of. Everything below it
+   on these screens is a report; this is the one card somebody acts on
+   before they leave the building, so it leads and the tiles follow.
+
+   The same card in three postures: the manager gets the buttons, the
+   owner gets the number without them, and whoever is doing the shopping
+   gets it as a list they can tap through in a shop with one hand.
    ============================================================ */
 
-const STOCK_WORD: Record<StockState, string> = {
-  yes: 'yes',
-  no: 'no',
-  partial: 'some',
-  unknown: 'not checked yet',
-};
+/** What to buy of something that has fallen below its minimum. */
+const suggest = (i: InventoryItem): number => Math.max(i.min * 2 - i.qty, i.min);
 
-/** The sheet as one message, ready to paste into the group (R3). */
-function sheetText(db: DB, sheet: RunningSheet): string {
-  const out: string[] = [];
-  const box = (r: { done: boolean }) => (r.done ? '[x]' : '[ ]');
+interface BuyList {
+  list: ShoppingItem[];
+  open: ShoppingItem[];
+  bought: number;
+  low: InventoryItem[];
+  /** Below minimum and not already on the list — the gap that bites. */
+  missing: InventoryItem[];
+}
 
-  out.push(SHEET_META.title);
-  out.push(`Apartment ${SHEET_META.apartment} · ${db.settings.address}`);
-  out.push(fmt(sheet.date) + (sheet.occasion ? ` · ${sheet.occasion}` : ''));
-  out.push(
-    [
-      sheet.prayersStart
-        ? `Prayers ${sheet.prayersStart}${sheet.prayersEnd ? `–${sheet.prayersEnd}` : ''}`
-        : 'PRAYER START TIME NOT SET',
-      sheet.meals == null ? 'NUMBER OF MEALS NOT SET' : plural(sheet.meals, 'meal'),
-      plural(sheet.guests ?? 0, 'guest'),
-    ].join(' · '),
+function buyList(db: DB): BuyList {
+  const list = db.shopping;
+  const open = shoppingOpen(db);
+  const low = belowMin(db);
+  const missing = low.filter(
+    (i) => !list.some((s) => s.name === i.name && s.status !== 'purchased'),
+  );
+  return { list, open, bought: list.length - open.length, low, missing };
+}
+
+/** The list as one message, ready to paste into the house group. */
+function buyListText(db: DB): string {
+  const { open, missing } = buyList(db);
+  const out: string[] = [`Buy list — ${fmt(todayStr())}`, `Apartment 3808`, ''];
+
+  open.forEach((s) =>
+    out.push(`${s.name} — ${qtyLabel(s.qty, s.unit)}${s.notes ? ` · ${s.notes}` : ''}`),
   );
 
-  out.push('', FOOD_RULE_HEADING, FOOD_RULE);
-  out.push('', PRAYER_ITEM_RULE_HEADING, PRAYER_ITEM_RULE);
-
-  out.push('', 'WHO IS WORKING TODAY');
-  sheet.roster.forEach((r) => out.push(`${r.who} — ${r.job} · ${r.hours}`));
-
-  out.push('', 'ORDER OF THE DAY');
-  sheet.order.forEach((r) => out.push(`${box(r)} ${r.timeLabel} — ${r.what} (${r.who})`));
-
-  const menu = sheet.menu.filter((m) => m.dish.trim());
-  if (menu.length) {
-    out.push('', `MENU${sheet.sitting ? ` (${sheet.sitting.toUpperCase()})` : ''}`);
-    menu.forEach((m) => out.push([m.dish, m.whoMakes, m.howMany, m.notes].filter(Boolean).join(' — ')));
-  }
-
-  if (sheet.shopping.length) {
-    out.push('', 'SHOPPING LIST');
-    sheet.shopping.forEach((s) =>
+  if (missing.length) {
+    out.push('', 'Below minimum, not on the list yet');
+    missing.forEach((i) => {
+      const cover = daysOfCover(db, i);
       out.push(
-        [s.item, s.howMuch.replace(/\n/g, ', '), `in stock: ${STOCK_WORD[s.inStock]}`, s.whoBuys]
-          .filter(Boolean)
-          .join(' — '),
-      ),
-    );
+        `${i.name} — suggest ${qtyLabel(suggest(i), i.unit)} (${i.qty} of ${i.min} left${
+          cover == null ? '' : `, about ${cover} days`
+        })`,
+      );
+    });
   }
 
-  if (sheet.sheetGuests.length) {
-    out.push('', 'GUESTS');
-    sheet.sheetGuests.forEach((g) => out.push([g.name, g.arriving, g.notes].filter(Boolean).join(' — ')));
-  }
-
-  out.push('', 'DAILY CHECKS');
-  sheet.checks.forEach((g) => {
-    out.push('', `${g.title} — ${g.items.filter((i) => i.done).length} of ${g.items.length}`);
-    g.items.forEach((i) => out.push(`${box(i)} ${i.text}`));
-  });
-
-  out.push('', ...FOOTER_RULES);
-  out.push(
-    '',
-    `Prepared by ${sheet.preparedBy || '—'} · Checked by ${sheet.checkedBy || db.settings.checkedByName}`,
-  );
+  if (!open.length && !missing.length) out.push('Nothing outstanding.');
   return out.join('\n');
 }
 
-/** The header bar of the printed sheet, in the same order it is printed. */
-function SheetFacts({ sheet }: { sheet: RunningSheet }) {
-  const blank = <span style={{ color: 'var(--rust)' }}>Not set — the sheet cannot go out</span>;
-  return (
-    <KV
-      rows={[
-        ['Occasion', sheet.occasion || 'No observance running'],
-        [
-          'Prayers',
-          sheet.prayersStart ? (
-            <>
-              {sheet.prayersStart} – {sheet.prayersEnd ?? '?'}
-              {sheet.actualPrayersEnd && (
-                <span className="muted"> · finished {sheet.actualPrayersEnd}</span>
-              )}
-            </>
-          ) : (
-            blank
-          ),
-        ],
-        ['Meals', sheet.meals == null ? blank : plural(sheet.meals, 'meal')],
-        ['Guests', sheet.guests == null ? '—' : plural(sheet.guests, 'guest')],
-        ['Sitting', sheet.sitting],
-      ]}
-    />
-  );
-}
-
-/** Earl's and the owners' view: where the sheet has got to, and get it out. */
-function SheetLead() {
-  const { db, date, sheet } = useDay();
+function BuyListLead({ variant }: { variant: 'run' | 'watch' | 'mine' }) {
+  const db = useStore((s) => s.db);
+  const user = useUser();
+  const upsert = useStore((s) => s.upsert);
+  const patch = useStore((s) => s.patch);
   const showToast = useStore((s) => s.showToast);
-  if (!sheet) return null;
 
-  const checks = sheet.checks.flatMap((g) => g.items);
-  const checksDone = checks.filter((i) => i.done).length;
-  const orderDone = sheet.order.filter((r) => r.done).length;
-  const posted = sheet.status === 'posted';
-  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
-  const late = !posted && date === todayStr() && nowMin > toMinutes(db.settings.sheetPostBy);
+  if (!can(db, user, 'inventory.view')) return null;
+  const mayEdit = can(db, user, 'inventory.edit');
+  const { list, open, bought, low, missing } = buyList(db);
+  const out = atZero(db);
+  const toBuy = open.length + missing.length;
+
+  const addAllBelowMin = () => {
+    missing.forEach((i) =>
+      upsert(
+        'shopping',
+        {
+          itemId: i.id,
+          name: i.name,
+          zone: i.zone,
+          qty: suggest(i),
+          unit: i.unit,
+          status: 'needed',
+          addedBy: user.id,
+          addedAt: Date.now(),
+          notes: i.notes,
+        },
+        'Added to the buy list',
+      ),
+    );
+    showToast(
+      missing.length
+        ? `${plural(missing.length, 'item')} added — the list is complete`
+        : 'Everything below minimum is already on the list',
+    );
+  };
 
   const copy = () => {
     if (!navigator.clipboard) {
-      showToast('This browser will not let the app copy. Open the sheet and copy it from there.');
+      showToast('This browser will not let the app copy. Open Inventory and copy it from there.');
       return;
     }
-    void navigator.clipboard.writeText(sheetText(db, sheet)).then(
-      () => showToast(`Copied — paste it into the ${db.settings.whatsappGroup} group`),
-      () => showToast('Could not copy it. Open the sheet and copy it from there.'),
+    void navigator.clipboard.writeText(buyListText(db)).then(
+      () => showToast('Copied — paste it into the house group'),
+      () => showToast('Could not copy it. Open Inventory and copy it from there.'),
     );
   };
+
+  if (!toBuy) {
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <Callout
+          tone="ok"
+          title="Nothing below minimum, the list is clear"
+          action={
+            <Btn size="xs" variant="ghost" onClick={() => navigate('inventory')}>
+              Open stock
+            </Btn>
+          }
+        >
+          Everything tracked is above its level and nothing is waiting to be bought.
+        </Callout>
+      </div>
+    );
+  }
+
+  /* Whoever is doing the shopping gets rows, not meters. One tap marks a
+     line bought, because the other hand is holding a basket. */
+  if (variant === 'mine') {
+    const mine = open.filter((s) => s.addedBy === user.id).length;
+    return (
+      <div style={{ marginBottom: 14 }}>
+        <Card>
+          <div className="between wrap">
+            <div className="grow">
+              <div className="eyebrow">The buy list</div>
+              <div className="serif" style={{ fontSize: 21, marginTop: 4 }}>
+                {plural(toBuy, 'thing')} to buy
+              </div>
+              <div className="muted" style={{ fontSize: 13.5, marginTop: 4 }}>
+                Tap a line once you have it. {mine ? `${mine} of them you added.` : 'Added by the house.'}
+              </div>
+            </div>
+            <Chip tone={out.length ? 'urgent' : 'low'}>
+              {out.length ? `${plural(out.length, 'item')} out` : `${bought} bought`}
+            </Chip>
+          </div>
+
+          <div className="list flat" style={{ marginTop: 13 }}>
+            {open.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                className="task"
+                disabled={!mayEdit}
+                onClick={() =>
+                  patch(
+                    'shopping',
+                    s.id,
+                    { status: 'purchased', purchasedAt: Date.now() },
+                    `${s.name} bought`,
+                  )
+                }
+              >
+                <span className="box">✓</span>
+                <span className="tx">
+                  {s.name}
+                  <span className="meta">
+                    <b className="tnum">{qtyLabel(s.qty, s.unit)}</b>
+                    {s.notes && <span>{s.notes}</span>}
+                  </span>
+                </span>
+              </button>
+            ))}
+            {missing.map((i) => (
+              <div key={i.id} className="task">
+                <span className="box">·</span>
+                <span className="tx">
+                  {i.name}
+                  <span className="meta">
+                    <b className="tnum">suggest {qtyLabel(suggest(i), i.unit)}</b>
+                    <span>not on the list yet</span>
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  const listPct = list.length ? Math.round((bought / list.length) * 100) : 100;
+  const coverPct = low.length ? Math.round(((low.length - missing.length) / low.length) * 100) : 100;
+  const spend = spendByZone(db, undefined, can(db, user, 'money.viewOwner'));
 
   return (
     <div style={{ marginBottom: 16 }}>
       <Card>
         <div className="between wrap">
           <div className="grow">
-            <div className="eyebrow">Today&rsquo;s running sheet</div>
+            <div className="eyebrow">The buy list</div>
             <div className="serif" style={{ fontSize: 23, marginTop: 4 }}>
-              {sheet.occasion || fmt(sheet.date)}
+              {plural(toBuy, 'thing')} to buy
             </div>
             <div className="muted" style={{ fontSize: 13.5, marginTop: 4 }}>
-              Goes to the {db.settings.whatsappGroup} group by {db.settings.sheetPostBy}. Checked by{' '}
-              {sheet.checkedBy || db.settings.checkedByName} before it goes out.
+              {missing.length
+                ? `${plural(missing.length, 'item')} below minimum and not on the list yet.`
+                : 'Everything below minimum is on the list.'}
             </div>
           </div>
-          <Chip tone={posted ? 'ok' : sheet.status === 'checked' ? 'info' : 'low'}>
-            {posted
-              ? `Posted${sheet.postedAt ? ` ${hhmm(sheet.postedAt)}` : ''}`
-              : titleCase(sheet.status)}
+          <Chip tone={out.length ? 'urgent' : missing.length ? 'low' : 'ok'}>
+            {out.length ? `${plural(out.length, 'item')} out completely` : 'Nothing out'}
           </Chip>
         </div>
 
         <div className="grid two" style={{ marginTop: 14 }}>
           <div>
-            <div className="eyebrow" style={{ marginBottom: 8 }}>The 31 daily checks</div>
-            <Meter pct={occasionPct(checks)} left={`${checksDone} of ${checks.length} ticked`} />
+            <div className="eyebrow" style={{ marginBottom: 8 }}>On the list</div>
+            <Meter pct={listPct} left={`${bought} of ${list.length} bought`} />
           </div>
           <div>
-            <div className="eyebrow" style={{ marginBottom: 8 }}>Order of the day</div>
-            <Meter pct={occasionPct(sheet.order)} left={`${orderDone} of ${sheet.order.length} done`} />
+            <div className="eyebrow" style={{ marginBottom: 8 }}>Below minimum, covered</div>
+            <Meter pct={coverPct} left={`${low.length - missing.length} of ${low.length} on the list`} />
           </div>
         </div>
 
-        <div className="row wrap" style={{ gap: 8, marginTop: 14 }}>
-          <Btn onClick={() => navigate('sheet')}>Open the sheet</Btn>
-          <Btn variant="ghost" onClick={copy}>Copy for WhatsApp</Btn>
-        </div>
+        {variant === 'run' && mayEdit && (
+          <div className="row wrap" style={{ gap: 8, marginTop: 14 }}>
+            <Btn onClick={addAllBelowMin} disabled={!missing.length}>
+              Add everything below minimum
+            </Btn>
+            <Btn variant="ghost" onClick={copy}>Copy for WhatsApp</Btn>
+            <Btn variant="ghost" onClick={() => navigate('inventory')}>Open stock</Btn>
+          </div>
+        )}
 
-        <hr className="hair" style={{ margin: '15px 0' }} />
-        <SheetFacts sheet={sheet} />
+        {variant === 'watch' && (
+          <>
+            <hr className="hair" style={{ margin: '15px 0' }} />
+            <div className="muted" style={{ fontSize: 13.5 }}>
+              {money(spend.household, db.settings.currency)} spent across the house this month.
+            </div>
+          </>
+        )}
       </Card>
 
-      {late && (
+      {out.length > 0 && (
         <div style={{ marginTop: 10 }}>
           <Callout
             tone="crit"
-            title={`Not posted, and it is past ${db.settings.sheetPostBy}`}
-            action={<Btn size="xs" variant="ghost" onClick={() => navigate('sheet')}>Finish it</Btn>}
+            title={`${plural(out.length, 'thing')} at zero`}
+            action={
+              <Btn size="xs" variant="ghost" onClick={() => navigate('inventory')}>
+                Open stock
+              </Btn>
+            }
           >
-            The group has not had today&rsquo;s sheet. Never send it out with the prayer start time or the
-            number of meals left blank.
+            {out.map((i) => i.name).join(', ')} — none left at all, not merely low.
           </Callout>
         </div>
       )}
     </div>
   );
-}
-
-/**
- * The sheet writes its `who` column as free text — 'Reza / Aditya / Earl
- * / Rosie' — so a first-name match is the only join there is between a
- * person and a row. The five real first names do not collide.
- */
-function namesMe(who: string, name: string): boolean {
-  return who.toLowerCase().includes(name.split(' ')[0]!.toLowerCase());
 }
 
 /* ============================================================
@@ -312,12 +371,12 @@ function ManagerToday() {
         sub={fmt(date)}
       />
 
-      <SheetLead />
+      <BuyListLead variant="run" />
 
       <div className="grid four" style={{ marginBottom: 16 }}>
         <Stat label="Today" value={`${o.pct}%`} foot={<span className="muted" style={{ fontSize: 12.5 }}>{o.done} of {o.total} done</span>} />
         <Stat label="Open issues" value={openIssues(db).length} tone={urgentIssues(db).length ? 'crit' : undefined} foot={urgentIssues(db).length ? <Chip tone="urgent">{plural(urgentIssues(db).length, 'urgent')}</Chip> : <Chip tone="ok">None urgent</Chip>} onClick={() => navigate('issues')} />
-        <Stat label="Below minimum" value={belowMin(db).length} foot={<Chip tone={belowMin(db).length ? 'low' : 'ok'}>Shopping list</Chip>} onClick={() => navigate('inventory')} />
+        <Stat label="Below minimum" value={belowMin(db).length} foot={<Chip tone={belowMin(db).length ? 'low' : 'ok'}>Buy list</Chip>} onClick={() => navigate('inventory')} />
         <Stat label="Awaiting you" value={awaitingApproval(db).length} foot={<span className="muted" style={{ fontSize: 12.5 }}>meal approvals</span>} onClick={() => navigate('cooking')} />
       </div>
 
@@ -473,11 +532,11 @@ function OwnerToday() {
     <>
       <PageHead eyebrow="Owner" title={`${greeting()}, ${user.name.split(' ')[0]}`} sub={fmt(date)} />
 
-      <SheetLead />
+      <BuyListLead variant="watch" />
 
       <div className="grid four" style={{ marginBottom: 16 }}>
         <Stat label="House today" value={`${o.pct}%`} foot={<span className="muted" style={{ fontSize: 12.5 }}>{o.done} of {o.total}</span>} />
-        <Stat label="Spend this month" value={money(total)} foot={<span className="muted" style={{ fontSize: 12.5 }}>all zones</span>} onClick={() => navigate('money')} />
+        <Stat label="Spend this month" value={money(total)} foot={<span className="muted" style={{ fontSize: 12.5 }}>everything recorded</span>} onClick={() => navigate('money')} />
         <Stat label="Over budget" value={over.length} tone={over.length ? 'warn' : undefined} foot={<span className="muted" style={{ fontSize: 12.5 }}>{over.length ? over[0]!.name : 'nothing'}</span>} onClick={() => navigate('money')} />
         <Stat label="Needs you" value={alerts.filter((a) => a.priority === 'urgent').length} tone={alerts.filter((a) => a.priority === 'urgent').length ? 'crit' : undefined} foot={<Chip tone={alerts.filter((a) => a.priority === 'urgent').length ? 'urgent' : 'ok'}>urgent</Chip>} onClick={() => navigate('alerts')} />
       </div>
@@ -514,7 +573,8 @@ function OwnerToday() {
       <SectionHead title="People" action={<Btn size="xs" variant="ghost" onClick={() => navigate('staff')}>Staff records</Btn>} />
       <List>
         {db.staffDetails.map((s) => {
-          const p = db.profiles.find((x) => x.id === s.profileId)!;
+          const p = db.profiles.find((x) => x.id === s.profileId);
+          if (!p) return null;
           const worst = Math.min(daysUntil(s.visaExpiry), daysUntil(s.passportExpiry), daysUntil(s.contractEnd));
           return (
             <Row
@@ -535,77 +595,6 @@ function OwnerToday() {
 /* ============================================================
    STAFF — my day, on a phone
    ============================================================ */
-
-/**
- * My day comes off the order of the day first. The task library is the
- * standing housework; the sheet is what today is, and a row that names
- * you is a job whether or not anyone made a task instance for it.
- */
-function MySheetDay() {
-  const user = useUser();
-  const { db, date, sheet } = useDay();
-  const toggleOrderRow = useStore((s) => s.toggleOrderRow);
-  if (!sheet) return null;
-
-  const mine = sheet.order.filter((r) => namesMe(r.who, user.name));
-  if (!mine.length) return null;
-
-  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
-  const open = mine.filter((r) => !r.done);
-  const next = open.find((r) => r.sortAt && toMinutes(r.sortAt) >= nowMin - 30) ?? open[0];
-
-  /* The shift gives the clock; the roster line gives what the house
-     actually says about those hours — 'Lives in — on duty until
-     close-down' — so both go on unless they say the same thing. */
-  const shift = db.shifts.find((s) => s.staffId === user.id);
-  const clock = shift ? `${shift.start} – ${shift.end}` : '';
-  const printed = sheet.roster.find((r) => r.personId === user.id)?.hours ?? '';
-  const hours =
-    [clock, clock && printed.includes(clock) ? '' : printed].filter(Boolean).join(' · ') ||
-    'Hours not set';
-
-  return (
-    <div style={{ marginBottom: 14 }}>
-      <Card>
-        <div className="between wrap">
-          <div className="grow">
-            <div className="eyebrow">Next on the sheet</div>
-            <div className="serif" style={{ fontSize: 21, marginTop: 4 }}>
-              {next ? `${next.timeLabel} — ${next.what}` : 'Everything you are named in is done'}
-            </div>
-            <div className="muted" style={{ fontSize: 13.5, marginTop: 4 }}>
-              {hours}
-              {sheet.occasion && ` · ${sheet.occasion}`}
-            </div>
-          </div>
-          <Chip tone={open.length ? 'low' : 'ok'}>
-            {mine.length - open.length} of {mine.length} done
-          </Chip>
-        </div>
-
-        <div className="list flat" style={{ marginTop: 13 }}>
-          {mine.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              className={cx('task', r.done && 'done')}
-              onClick={() => toggleOrderRow(date, r.id)}
-            >
-              <span className="box">✓</span>
-              <span className="tx">
-                {r.what}
-                <span className="meta">
-                  <b className="tnum">{r.timeLabel}</b>
-                  <span>{r.who}</span>
-                </span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </Card>
-    </div>
-  );
-}
 
 function StaffToday() {
   const user = useUser();
@@ -638,7 +627,7 @@ function StaffToday() {
     <>
       <PageHead eyebrow="My day" title={`${greeting()}, ${user.name}`} sub={fmt(date)} />
 
-      <MySheetDay />
+      <BuyListLead variant="mine" />
 
       <Card style={{ marginBottom: 14 }}>
         <div className="eyebrow" style={{ marginBottom: 8 }}>Your jobs on the checklist</div>
@@ -746,15 +735,27 @@ function FamilyToday() {
   const events = upcomingEvents(db).slice(0, 3);
   const openSheet = useStore((s) => s.openSheet);
   const mine = issuesFor(db, user.id);
+  const parcels = db.deliveries.filter((d) => d.forProfileId === user.id && d.status === 'received');
 
   return (
     <>
       <PageHead
-        eyebrow="Family"
-        title={`${greeting()}, ${user.name}`}
+        eyebrow="Household"
+        title={`${greeting()}, ${user.name.split(' ')[0]}`}
         sub={fmt(date)}
         tools={<Btn onClick={() => openSheet('issue-new')}>Ask for something</Btn>}
       />
+
+      <BuyListLead variant="watch" />
+
+      {parcels.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <Callout tone="warn" title={`${plural(parcels.length, 'parcel')} waiting for you`}>
+            {parcels.map((p) => `${p.description} (${p.courier}, ${fmtShort(p.date)})`).join(' · ')} — in the
+            store by the door.
+          </Callout>
+        </div>
+      )}
 
       <SectionHead title="Eating today" />
       {meals.length ? (
@@ -824,93 +825,6 @@ function FamilyToday() {
                 onClick={() => navigate('issues', undefined, i.id)}
               />
             ))}
-          </List>
-        </>
-      )}
-    </>
-  );
-}
-
-/* ============================================================
-   The narrowest view in the app: someone who can say something is
-   wrong and see the answer, and nothing else.
-   ============================================================ */
-
-function RequesterToday() {
-  const user = useUser();
-  const db = useStore((s) => s.db);
-  const openSheet = useStore((s) => s.openSheet);
-  const mine = issuesFor(db, user.id);
-  const openMine = mine.filter((i) => !['resolved', 'closed'].includes(i.status));
-  const parcels = db.deliveries.filter((d) => d.forProfileId === user.id && d.status === 'received');
-
-  return (
-    <>
-      <PageHead
-        eyebrow="Household"
-        title={`${greeting()}, ${user.name.split(' ')[0]}`}
-        sub={fmt(todayStr())}
-      />
-
-      <div style={{ marginBottom: 16 }}>
-        <Card>
-          <div className="between wrap">
-            <div className="grow">
-              <div className="serif" style={{ fontSize: 20 }}>Something needs attention?</div>
-              <div className="muted" style={{ fontSize: 14, marginTop: 4 }}>
-                A photo, where it is, one line. Reza is usually on it within the hour.
-              </div>
-            </div>
-            <Btn onClick={() => openSheet('issue-new')}>Report or request</Btn>
-          </div>
-        </Card>
-      </div>
-
-      {parcels.length > 0 && (
-        <div style={{ marginBottom: 14 }}>
-          <Callout tone="warn" title={`${plural(parcels.length, 'parcel')} waiting for you`}>
-            {parcels.map((p) => `${p.description} (${p.courier}, ${fmtShort(p.date)})`).join(' · ')} — in the
-            the store by the door.
-          </Callout>
-        </div>
-      )}
-
-      <SectionHead title={`Open · ${openMine.length}`} />
-      {openMine.length ? (
-        <List>
-          {openMine.map((i) => (
-            <Row
-              key={i.id}
-              title={i.title}
-              sub={`Reported ${fmtShort(new Date(i.reportedAt).toISOString().slice(0, 10))}${i.assignedTo ? ` · with ${db.profiles.find((p) => p.id === i.assignedTo)?.name}` : ''}`}
-              right={
-                <Chip tone={i.status === 'reported' ? 'plain' : i.status === 'awaiting_vendor' ? 'low' : 'info'}>
-                  {i.status === 'reported' ? 'Not picked up yet' : i.status.replace('_', ' ')}
-                </Chip>
-              }
-              onClick={() => navigate('issues', undefined, i.id)}
-            />
-          ))}
-        </List>
-      ) : (
-        <Empty title="Nothing open">Anything you report shows here until it is resolved.</Empty>
-      )}
-
-      {mine.filter((i) => ['resolved', 'closed'].includes(i.status)).length > 0 && (
-        <>
-          <SectionHead title="Resolved" />
-          <List>
-            {mine
-              .filter((i) => ['resolved', 'closed'].includes(i.status))
-              .map((i) => (
-                <Row
-                  key={i.id}
-                  title={i.title}
-                  sub={i.resolution}
-                  right={<Chip tone="ok">Resolved</Chip>}
-                  onClick={() => navigate('issues', undefined, i.id)}
-                />
-              ))}
           </List>
         </>
       )}

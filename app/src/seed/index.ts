@@ -12,12 +12,7 @@ import {
   SEED_STAFF_DETAILS,
 } from './people';
 import { SEED_CATEGORIES, SEED_LIBRARY, SEED_PROCEDURES } from './work';
-import {
-  SEED_DIVO_LOG,
-  SEED_OBSERVANCE,
-  SEED_SHEETS,
-  SEED_SHRINE_CHECKS,
-} from './prayer';
+import { SEED_CHAT } from './chat';
 import {
   SEED_INVENTORY,
   SEED_INV_CATEGORIES,
@@ -58,11 +53,107 @@ import {
   SEED_PUSH_SUBS,
 } from './live';
 
-/* Bumped to 3 on 2026-08-28: the office side came out and roles became
-   rows rather than a fixed word. A stored database from version 2 has
-   office areas, office people and a 'requester' role in it, none of
-   which mean anything now, so it is discarded rather than migrated. */
-export const DB_VERSION = 3;
+/* Bumped to 4 on 2026-09-23: the observance is over and its whole domain
+   is gone, and the house chat is new. The bump is not cosmetic — a browser
+   holding version 3 keeps its old roles array, so chat.view is missing
+   from every role and the chat is simply invisible with no error to
+   explain it. Version 3 is discarded rather than migrated, as version 2
+   was when the office side came out.
+
+   5 the same day: the seed still carried a salary and a residence visa
+   for a member of staff who has left. The visa outlives the person — it
+   has an expiry and a reminder, so a device holding version 4 would go on
+   raising an alert about someone the house no longer employs. */
+export const DB_VERSION = 5;
+
+/* ============================================================
+   The empty house.
+
+   What the store starts from when a backend is configured: the shape
+   of a DB with nothing in it, filled by tier 1 and tier 2 before the
+   first screen is drawn.
+
+   It exists so that a real database is never mixed with seeded rows.
+   Starting from seedDB() and letting the reads overwrite it looks
+   harmless and is not — every slice the reads do not cover keeps its
+   invented contents, so the Register lists assets that are not in the
+   flat and Reports scores three weeks of ticks that never happened.
+   An empty screen against a real database is honest; a populated one
+   is not.
+   ============================================================ */
+export function emptyDB(): DB {
+  return {
+    ...seedDB(),
+    settings: {
+      house: '',
+      address: '',
+      // Matching the column defaults in the settings table, so nothing
+      // here contradicts what the database will send a moment later.
+      currency: 'AED',
+      locale: 'en-GB',
+      mealTimes: {},
+      portionDefault: 4,
+      workingWeek: { days: [], start: '09:00', end: '18:00' },
+      alertLeadDays: 30,
+      laundry: {},
+      laundryStages: [],
+      unusedDows: [],
+      planStart: '06:00',
+      planEnd: '22:00',
+      // Replaced by the real epoch in tier 1. Fortnightly parity is
+      // meaningless until it lands, and no room is drawn before then.
+      parityEpoch: '1970-01-01',
+    },
+    roles: [],
+    profiles: [],
+    areas: [],
+    taskCategories: [],
+    library: [],
+    days: {},
+    procedures: [],
+    appointments: [],
+    shifts: [],
+    absences: [],
+    coverage: [],
+    issues: [],
+    incidents: [],
+    chat: [],
+    inventoryCategories: [],
+    inventory: [],
+    movements: [],
+    shopping: [],
+    meals: [],
+    waste: [],
+    assets: [],
+    vehicles: [],
+    contracts: [],
+    plants: [],
+    contacts: [],
+    vendors: [],
+    visitors: [],
+    contractorVisits: [],
+    deliveries: [],
+    credentials: [],
+    expenseCategories: [],
+    budgets: [],
+    transactions: [],
+    recurring: [],
+    pettyCash: [],
+    documents: [],
+    staffDetails: [],
+    attendance: [],
+    leave: [],
+    reviews: [],
+    guests: [],
+    events: [],
+    templates: [],
+    vacations: [],
+    notifications: [],
+    pushSubs: [],
+    notifPrefs: [],
+    audit: [],
+  };
+}
 
 export function seedDB(): DB {
   return {
@@ -74,10 +165,6 @@ export function seedDB(): DB {
     taskCategories: SEED_CATEGORIES,
     library: SEED_LIBRARY,
     days: {},
-    sheets: { ...SEED_SHEETS },
-    observances: [SEED_OBSERVANCE],
-    divoLog: SEED_DIVO_LOG,
-    shrineChecks: SEED_SHRINE_CHECKS,
     procedures: SEED_PROCEDURES,
     appointments: SEED_APPOINTMENTS,
     shifts: SEED_SHIFTS,
@@ -85,6 +172,7 @@ export function seedDB(): DB {
     coverage: SEED_COVERAGE,
     issues: SEED_ISSUES,
     incidents: SEED_INCIDENTS,
+    chat: SEED_CHAT,
     inventoryCategories: SEED_INV_CATEGORIES,
     inventory: SEED_INVENTORY,
     movements: SEED_MOVEMENTS,

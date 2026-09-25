@@ -35,7 +35,7 @@ function StaffOverview() {
     <>
       <PageHead
         eyebrow="Staff"
-        title="Three people, two zones"
+        title={`${plural(staff.length, 'person', 'people')} who work here`}
         sub={isOwner ? 'Contracts, expiries, leave and pay.' : 'Rota, leave and attendance. Pay and contracts are owner-only.'}
         tools={<Btn size="sm" variant="ghost" onClick={() => openSheet('absence-new')}>Record an absence</Btn>}
       />
@@ -153,7 +153,7 @@ function Rota() {
 
   return (
     <>
-      <SectionHead title="Next fortnight" sub="Coverage rules fill the gaps automatically — Reza covers the driving, and on the cooks’ days off Rosie reheats and makes the breads." />
+      <SectionHead title="Next fortnight" sub="Coverage rules fill the gaps automatically — Earl drives on Marvin’s day off, and Marvin reheats what Rosie left on hers." />
       <div className="tblwrap">
         <table className="tbl">
           <thead>
