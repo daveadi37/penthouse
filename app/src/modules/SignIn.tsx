@@ -99,18 +99,52 @@ export function SignIn({ onDemo }: { onDemo: () => void }) {
           </form>
         ) : (
           <>
-            <div className="callout" style={{ padding: '13px 16px', borderRadius: 8, marginBottom: 14 }}>
-              <div className="eyebrow">No backend connected</div>
-              <div className="muted" style={{ fontSize: 13.5, marginTop: 5, lineHeight: 1.5 }}>
-                This build has no Supabase project behind it, so there is nothing to sign in to. Everything
-                below runs on the seeded house, on this device only — nothing leaves it and nothing is shared.
-              </div>
-            </div>
-            <Btn block onClick={onDemo}>Open the seeded house</Btn>
-            <div className="muted center" style={{ fontSize: 12.5, marginTop: 14, lineHeight: 1.5 }}>
-              To connect it: <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> in{' '}
-              <code>app/.env</code>, then build again. See <code>docs/DEPLOY.md</code>.
-            </div>
+            {/*
+              The seeded house is a development convenience and nothing
+              else. It is a real household — real names, the real
+              address, who works here — and the button below signs you
+              in as the owner without a password.
+
+              On a deployed site with the keys not yet set, that is the
+              whole app handed to anybody who finds the URL, in exactly
+              the window between creating the Vercel project and pasting
+              the two variables in. The DEV guard further up this file
+              protects the branch beside this one and gave every
+              impression this branch was covered too. It was not.
+            */}
+            {import.meta.env.DEV ? (
+              <>
+                <div className="callout" style={{ padding: '13px 16px', borderRadius: 8, marginBottom: 14 }}>
+                  <div className="eyebrow">No backend connected</div>
+                  <div className="muted" style={{ fontSize: 13.5, marginTop: 5, lineHeight: 1.5 }}>
+                    This build has no Supabase project behind it, so there is nothing to sign in to.
+                    Everything below runs on the seeded house, on this device only — nothing leaves it and
+                    nothing is shared.
+                  </div>
+                </div>
+                <Btn block onClick={onDemo}>Open the seeded house</Btn>
+                <div className="muted center" style={{ fontSize: 12.5, marginTop: 14, lineHeight: 1.5 }}>
+                  To connect it: <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> in{' '}
+                  <code>app/.env</code>, then build again. See <code>SETUP.md</code>.
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="callout" style={{ padding: '13px 16px', borderRadius: 8, marginBottom: 14 }}>
+                  <div className="eyebrow">Not set up yet</div>
+                  <div className="muted" style={{ fontSize: 13.5, marginTop: 5, lineHeight: 1.5 }}>
+                    This site has no database behind it, so there is nothing to sign in to and nothing to
+                    show.
+                  </div>
+                </div>
+                <div className="muted center" style={{ fontSize: 12.5, marginTop: 14, lineHeight: 1.5 }}>
+                  Whoever set this up needs to add <code>VITE_SUPABASE_URL</code> and{' '}
+                  <code>VITE_SUPABASE_ANON_KEY</code> to the hosting project and deploy it again — the
+                  values are read when the site is built, not when it is opened. Step 6 of{' '}
+                  <code>SETUP.md</code>.
+                </div>
+              </>
+            )}
           </>
         )}
 

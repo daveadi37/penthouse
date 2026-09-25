@@ -59,7 +59,7 @@ export function RolesAndLogins() {
       <div className="grid four" style={{ marginBottom: 16 }}>
         <Stat label="Logins" value={withLogins.length} foot={<span className="muted" style={{ fontSize: 12.5 }}>of {db.profiles.filter((p) => p.active).length} people</span>} />
         <Stat label="Awaiting a password" value={pending.length} tone={pending.length ? 'warn' : undefined} foot={<span className="muted" style={{ fontSize: 12.5 }}>you set it, they never choose one</span>} />
-        <Stat label="On the sheet, no login" value={withoutLogins.length} foot={<span className="muted" style={{ fontSize: 12.5 }}>the cooks and the priests</span>} />
+        <Stat label="In the house, no login" value={withoutLogins.length} foot={<span className="muted" style={{ fontSize: 12.5 }}>the children, and anyone with no email</span>} />
         <Stat label="Roles" value={db.roles.filter((r) => r.active).length} foot={<span className="muted" style={{ fontSize: 12.5 }}>{plural(CAPABILITIES.length, 'capability', 'capabilities')} to compose from</span>} />
       </div>
 
@@ -91,7 +91,7 @@ function People() {
     <>
       <SectionHead
         title="Everybody in the house"
-        sub="Grouped by role, highest first. A person with no login still appears on the running sheet and in the rota — they simply never open the app."
+        sub="Grouped by role, highest first. A person with no login still appears in the rota and in the meal portions — they simply never open the app."
         action={
           can(db, user, 'accounts.manage') ? (
             <Btn size="xs" variant="ghost" onClick={() => openSheet('person-new')}>Add a person</Btn>
@@ -197,11 +197,11 @@ function Roles() {
 
 const CAP_GROUPS: [string, Capability[]][] = [
   ['The day', ['day.view', 'day.tick', 'day.assign', 'library.edit']],
-  ['The running sheet', ['sheet.view', 'sheet.edit', 'sheet.check', 'sheet.post']],
   ['Issues', ['issue.raise', 'issue.viewAll', 'issue.manage']],
   ['Kitchen & stock', ['inventory.view', 'inventory.edit', 'cooking.view', 'cooking.edit', 'cooking.approve']],
   ['Money & documents', ['money.view', 'money.viewOwner', 'documents.view', 'documents.viewOwner']],
-  ['The house', ['property.view', 'property.edit', 'register.view', 'register.edit', 'occasions.view', 'occasions.edit', 'shrine.view', 'shrine.log']],
+  ['The house', ['property.view', 'property.edit', 'register.view', 'register.edit', 'occasions.view', 'occasions.edit']],
+  ['Chat', ['chat.view', 'chat.post']],
   ['People', ['people.view', 'people.manage']],
   ['Administration', ['settings.edit', 'roles.manage', 'accounts.manage', 'audit.view']],
 ];
@@ -210,7 +210,7 @@ export function RoleSheet({ id }: { id?: string }) {
   const db = useStore((s) => s.db);
   const user = useUser();
   const closeSheet = useStore((s) => s.closeSheet);
-  const upsert = useStore((s) => s.upsert);
+  const saveRole = useStore((s) => s.saveRole);
   const patch = useStore((s) => s.patch);
   const showToast = useStore((s) => s.showToast);
   const myRank = rankOf(db, user);
@@ -222,7 +222,7 @@ export function RoleSheet({ id }: { id?: string }) {
       name: '',
       rank: Math.max(10, Math.min(myRank - 10, 40)),
       description: '',
-      capabilities: ['day.view', 'sheet.view', 'issue.raise'],
+      capabilities: ['day.view', 'chat.view', 'issue.raise'],
       works: true,
       active: true,
     },
@@ -254,7 +254,7 @@ export function RoleSheet({ id }: { id?: string }) {
       ...f,
       id: f.id || f.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
     };
-    upsert('roles', rec, `Role “${rec.name}” saved`);
+    void saveRole(rec);
     closeSheet();
   };
 
@@ -399,7 +399,7 @@ export function PersonSheet({ id }: { id?: string }) {
       sub={
         f.canSignIn
           ? 'You set the password. Nobody chooses their own, and there is no reset email to intercept — when someone leaves, deleting the login ends their access completely.'
-          : 'Somebody who appears on the sheet and in the rota but never opens the app.'
+          : 'Somebody who appears in the rota but never opens the app.'
       }
       onClose={closeSheet}
       wide
@@ -447,6 +447,20 @@ export function PersonSheet({ id }: { id?: string }) {
         </Field>
         <Field label="Phone"><Text value={f.phone} onChange={(v) => set('phone', v)} /></Field>
       </div>
+
+      <Check
+        checked={!!f.isHouseholdMember}
+        onChange={(v) => set('isHouseholdMember', v)}
+        label="Lives here — appears in the laundry rota and in the meal portions"
+      />
+
+      <Field label="Dietary needs" hint="Read by the kitchen when menus are planned. Free text.">
+        <Text
+          value={f.diet ?? ''}
+          onChange={(v) => set('diet', v)}
+          placeholder="Vegetarian — no meat, no fish, no eggs. Dairy is fine."
+        />
+      </Field>
 
       <Check
         checked={!!f.canSignIn}

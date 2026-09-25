@@ -1,7 +1,8 @@
 import React from 'react';
 import { useStore, useUser } from '@/store';
 import { can } from '@/lib/access';
-import { currentSession, onAuthChange, type Session } from '@/lib/auth';
+import { currentSession, onAuthChange, signOut, type Session } from '@/lib/auth';
+import { ensureLoaded } from '@/lib/sync/engine';
 import { backendConfigured } from '@/lib/supabase';
 import { SignIn } from '@/modules/SignIn';
 import type { Capability } from '@/types';
@@ -48,6 +49,7 @@ import {
   OccasionTaskSheet,
 } from '@/modules/Occasions';
 import { Admin, Alerts, AreaSheet, ExportSheet, LibSheet, Manual, Notifications, Reports } from '@/modules/Misc';
+import { Chat } from '@/modules/Chat';
 import { PersonSheet, RolesAndLogins, RoleSheet } from '@/modules/Access';
 import { Empty } from '@/components/ui';
 
@@ -55,6 +57,7 @@ export default function App() {
   const ready = useStore((s) => s.ready);
   const init = useStore((s) => s.init);
   const db = useStore((s) => s.db);
+  const bootError = useStore((s) => s.bootError);
 
   /* Who is signed in, and therefore whether anything below renders at
      all. With no backend configured there is nothing to authenticate
@@ -65,27 +68,50 @@ export default function App() {
   const [demo, setDemo] = React.useState(false);
   const setUser = useStore((s) => s.setUser);
 
+  /* Wait for somebody to read the house as.
+
+     Every read policy is `to authenticated`, so tier 1 run before
+     sign-in returns no rows and no error — nothing at all to say why.
+     Booting at mount therefore read the house as nobody, found zero
+     profiles and set bootError; the sign-in that followed could not
+     clear it, because the bootError check below fires before anything
+     else renders. The first thing every new user saw was "The house
+     records are empty", and only a reload got past it.
+
+     init() is safe to run again — attachMirror assigns, startSync and
+     startRealtime both return early if they are already going. With no
+     backend there is nobody to wait for, so it runs at once. */
   React.useEffect(() => {
+    if (backendConfigured && !session) return;
     void init();
-  }, [init]);
+  }, [init, session?.authId]);
 
   React.useEffect(() => {
     if (!backendConfigured) return;
-    void currentSession().then((s) => {
-      setSession(s);
-      setCheckedSession(true);
-    });
+    void currentSession()
+      .then((s) => setSession(s))
+      /* A rejected getSession — a corrupted token, or Safari in private
+         mode throwing on localStorage — used to leave checkedSession
+         false for ever, and the app sat on "Checking your session…"
+         with no timeout and no way out. Treat it as nobody signed in;
+         the sign-in screen is a far better dead end than a spinner. */
+      .catch(() => setSession(null))
+      .finally(() => setCheckedSession(true));
     return onAuthChange((s) => setSession(s));
   }, []);
 
-  /* Match the signed-in account to a profile. The email is the join,
-     because auth_user_id is written by the Edge Function and this build
-     may be reading a database it did not create. */
+  /* Match the signed-in account to a profile, by auth_user_id and
+     nothing else.
+
+     There was an email fallback here and it had to go. A device
+     holding a stale cached seed has shrien@3808.local sitting in
+     db.profiles; anyone who signs up with that address matches it and
+     is handed the owner's view of the house before a single row is
+     read. auth_user_id is written by the Edge Function, which checks a
+     capability first, and it is the only claim worth trusting. */
   React.useEffect(() => {
-    if (!session) return;
-    const p = db.profiles.find(
-      (x) => x.authId === session.authId || x.email.toLowerCase() === session.email.toLowerCase(),
-    );
+    if (!session || !backendConfigured) return;
+    const p = db.profiles.find((x) => x.authId && x.authId === session.authId);
     if (p) setUser(p.id);
   }, [session, db.profiles, setUser]);
 
@@ -100,19 +126,49 @@ export default function App() {
   }
 
   if (!session && !demo) {
-    return <SignIn onDemo={() => setDemo(true)} />;
+    /* Looking around the seeded house needs somebody to look around it as.
+       Nobody is signed in, and useUser() now fails closed to an inactive
+       profile with no capabilities — which is right when a stranger reaches
+       a real database, and wrong here, where it would refuse every screen.
+       Start as the owner; the account switcher in the sidebar changes it. */
+    return (
+      <SignIn
+        onDemo={() => {
+          setUser('p-aditya');
+          setDemo(true);
+        }}
+      />
+    );
   }
 
   if (!ready) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div className="center">
-          <div className="serif" style={{ fontSize: 26 }}>{db.settings.house}</div>
-          <div className="muted" style={{ marginTop: 6 }}>Building today&rsquo;s work&hellip;</div>
+          <div className="serif" style={{ fontSize: 26 }}>{db.settings.house || 'Apartment 3808'}</div>
+          <div className="muted" style={{ marginTop: 6 }}>
+            {backendConfigured ? 'Opening the house records…' : 'Building today’s work…'}
+          </div>
         </div>
       </div>
     );
   }
+
+  /* A session with nobody behind it. The account is real and the house
+     does not know it, which is exactly the case that must not be
+     allowed to guess — so nothing below this line mounts.
+
+     Checked before bootError, and that order matters. profiles_read now
+     requires a profile of your own, so a stranger reads zero rows —
+     which is indistinguishable, from here, from a database with nothing
+     in it. Both used to land on "The house records are empty", which
+     tells the one person it is actually about the wrong thing. If there
+     is a session and no profile behind it, that is the answer. */
+  if (session && !db.profiles.some((p) => p.authId && p.authId === session.authId)) {
+    return <NoProfile email={session.email} />;
+  }
+
+  if (bootError) return <BootTrouble detail={bootError} />;
 
   return (
     <Shell>
@@ -122,11 +178,75 @@ export default function App() {
   );
 }
 
+/* ============================================================
+   The two screens that are not the house.
+
+   Both of them deliberately offer nothing to press. A browser that
+   can link itself to a profile is a browser that can claim the
+   owner, and an app that falls back to the seeded house when the
+   database is unreachable is an app somebody spends a morning
+   entering real stock into for nothing.
+   ============================================================ */
+
+function NoProfile({ email }: { email: string }) {
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div className="center" style={{ maxWidth: 420 }}>
+        <div className="serif" style={{ fontSize: 24 }}>Not linked yet</div>
+        <div className="muted" style={{ marginTop: 10, lineHeight: 1.6 }}>
+          Your account is not linked to anyone in this house yet. Ask Aditya.
+        </div>
+        <div className="muted" style={{ marginTop: 14, fontSize: 12.5 }}>
+          Signed in as {email || 'an account with no email address'}.
+        </div>
+        <button type="button" className="btn ghost" style={{ marginTop: 18 }} onClick={() => void signOut()}>
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BootTrouble({ detail }: { detail: string }) {
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div className="center" style={{ maxWidth: 460 }}>
+        <div className="serif" style={{ fontSize: 24 }}>The house records are empty</div>
+        <div className="muted" style={{ marginTop: 10, lineHeight: 1.6, textAlign: 'left' }}>
+          Nothing came back from the database. There are two things to check, and it is almost
+          always the first:
+          <ol style={{ margin: '12px 0 0', paddingLeft: 20 }}>
+            <li style={{ marginBottom: 6 }}>The migrations were never run against this project.</li>
+            <li>They were, and row-level security refused everything — the signed-in account holds no role.</li>
+          </ol>
+        </div>
+        {detail !== 'no-profiles' && (
+          <div className="muted" style={{ marginTop: 14, fontSize: 12.5, textAlign: 'left' }}>
+            {detail}
+          </div>
+        )}
+        <button type="button" className="btn ghost" style={{ marginTop: 18 }} onClick={() => window.location.reload()}>
+          Try again
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Page() {
   const route = useRoute();
   const user = useUser();
 
   const db = useStore((s) => s.db);
+
+  /* Tier 3, and the only place it is asked for.
+     One effect covers all eighteen screens: the registry says which
+     slices a module needs, the engine fetches each one once and keeps
+     it, and a module that needs nothing beyond tiers 1 and 2 — which
+     is most of them — costs a lookup and no request at all. */
+  React.useEffect(() => {
+    void ensureLoaded(route.module);
+  }, [route.module]);
 
   /* Capability gate. In production the same capability is also a
      row-level security policy, so a hidden screen is not the security
@@ -141,7 +261,9 @@ function Page() {
 
   switch (route.module) {
     case 'today':
-      return <Today />;
+      return only('day.view', <Today />);
+    case 'chat':
+      return only('chat.view', <Chat />);
     case 'planner':
       return only('day.tick', <Planner />);
     case 'checklist':
@@ -149,7 +271,7 @@ function Page() {
     case 'calendar':
       return only('day.view', <Calendar />);
     case 'issues':
-      return <Issues />;
+      return only('issue.raise', <Issues />);
     case 'inventory':
       return only('inventory.view', <Inventory />);
     case 'cooking':
@@ -174,14 +296,14 @@ function Page() {
       return only('issue.manage', <Alerts />);
     case 'manual':
       return only('day.view', <Manual />);
+    /* Deliberately ungated: this is the person's own inbox, and gating it
+       would lock out anyone whose only capability is issue.raise. */
     case 'notifications':
       return <Notifications />;
     case 'roles':
       return only('roles.manage', <RolesAndLogins />);
     case 'admin':
       return only('settings.edit', <Admin />);
-    case 'more':
-      return <Today />;
     default:
       return <Today />;
   }

@@ -1,13 +1,13 @@
 import React from 'react';
 import {useStore, useUser} from '@/store';
+import {can, worksHere} from '@/lib/access';
 import {detailId, navigate, useRoute} from '@/lib/router';
 import {fmt, fmtShort, timeAgo} from '@/lib/date';
 import {money, plural} from '@/lib/format';
 import {areaName, byPriority, issuesFor, OPEN_STATUSES, profileName, staffList} from '@/lib/selectors';
 import {ISSUE_STATUS_FLOW} from '@/types';
-import type { IssueKind, IssuePriority, IssueStatus, Zone } from '@/types';
+import type { DB, IssueKind, IssuePriority, IssueStatus, Profile, Zone } from '@/types';
 import {Avatar, Btn, Card, Chip, Empty, Field, List, PageHead, Row, SectionHead, Seg, Select, Sheet, Stat, Text, ZoneChip} from '@/components/ui';
-import {ZoneFilterBar} from '@/components/Shell';
 
 const KIND_LABEL: Record<IssueKind, string> = {
   fault: 'Fault',
@@ -30,6 +30,16 @@ function priorityTone(p: IssuePriority) {
   return p === 'urgent' ? 'urgent' : p === 'high' ? 'low' : p === 'low' ? 'plain' : 'info';
 }
 
+/**
+ * Who a job can land on. Everyone who works here, plus whoever manages
+ * issues — the manager is not on the rota but still owns jobs, and
+ * naming them by id here is how the list went stale last time.
+ */
+function assignees(db: DB): Profile[] {
+  const staff = staffList(db);
+  return [...staff, ...db.profiles.filter((p) => p.active && can(db, p, 'issue.manage') && !staff.includes(p))];
+}
+
 export function Issues() {
   const route = useRoute();
   const id = detailId(route);
@@ -40,16 +50,16 @@ export function Issues() {
 function IssueList() {
   const user = useUser();
   const db = useStore((s) => s.db);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   const openSheet = useStore((s) => s.openSheet);
   const [tab, setTab] = React.useState<'open' | 'mine' | 'resolved' | 'all'>('open');
   const [kind, setKind] = React.useState<IssueKind | 'all'>('all');
   const [q, setQ] = React.useState('');
 
-  const isRequester = user.role === 'requester' || user.role === 'family';
+  // Without issue.viewAll a person sees only what they raised themselves,
+  // so the whole screen turns into "what I have reported".
+  const isRequester = !can(db, user, 'issue.viewAll');
 
   let list = isRequester ? issuesFor(db, user.id) : db.issues;
-  if (zoneFilter !== 'all') list = list.filter((i) => i.zone === zoneFilter);
   if (kind !== 'all') list = list.filter((i) => i.kind === kind);
   if (q) {
     const s = q.toLowerCase();
@@ -93,14 +103,13 @@ function IssueList() {
           onChange={setTab}
           options={[
             { value: 'open', label: 'Open', count: list.filter((i) => OPEN_STATUSES.includes(i.status)).length },
-            ...(user.role === 'staff' || user.role === 'manager'
+            ...(can(db, user, 'issue.manage') || worksHere(db, user)
               ? [{ value: 'mine' as const, label: 'Mine', count: list.filter((i) => i.assignedTo === user.id && OPEN_STATUSES.includes(i.status)).length }]
               : []),
             { value: 'resolved', label: 'Resolved' },
             { value: 'all', label: 'All' },
           ]}
         />
-        {!isRequester && <ZoneFilterBar />}
       </div>
 
       <div className="row wrap" style={{ gap: 8, marginBottom: 14 }}>
@@ -164,8 +173,10 @@ function IssueDetail({ id }: { id: string }) {
   const i = db.issues.find((x) => x.id === id);
   if (!i) return <Empty title="That issue no longer exists" />;
 
-  const canManage = user.role === 'owner' || user.role === 'manager';
-  const canWork = canManage || user.role === 'staff';
+  const canManage = can(db, user, 'issue.manage');
+  // Anyone who ticks work off can move an issue along and photograph it;
+  // only a manager sets the vendor and the cost.
+  const canWork = canManage || can(db, user, 'day.tick');
   const nextStatus = ISSUE_STATUS_FLOW[ISSUE_STATUS_FLOW.indexOf(i.status) + 1];
 
   return (
@@ -251,7 +262,7 @@ function IssueDetail({ id }: { id: string }) {
           </List>
 
           <Card style={{ marginTop: 12 }}>
-            <Field label="Add to the thread" hint="The person who reported it gets a push.">
+            <Field label="Add to the thread" hint="The person who reported it sees this on the issue.">
               <textarea className="in" rows={3} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="What you found, what you have done, what happens next" />
             </Field>
             <Btn
@@ -296,8 +307,7 @@ function IssueDetail({ id }: { id: string }) {
                   onChange={(v) => patch('issues', i.id, { assignedTo: v || undefined, status: v && i.status === 'reported' ? 'assigned' : i.status }, 'Reassigned')}
                   options={[
                     { value: '', label: 'Nobody' },
-                    ...staffList(db).map((p) => ({ value: p.id, label: p.name })),
-                    { value: 'p-mgr', label: 'Priya Menon (manager)' },
+                    ...assignees(db).map((p) => ({ value: p.id, label: p.name })),
                   ]}
                 />
               </Field>
@@ -361,7 +371,6 @@ export function IssueNewSheet() {
   const [photos, setPhotos] = React.useState<string[]>([]);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
-  const isRequester = false;
   const areas = db.areas.filter((a) => a.active);
 
   const [f, setF] = React.useState<{
@@ -371,7 +380,7 @@ export function IssueNewSheet() {
     areaId: string;
     priority: IssuePriority;
   }>({
-    kind: isRequester ? 'fault' : 'fault',
+    kind: 'fault',
     title: '',
     detail: '',
     areaId: '',
@@ -392,7 +401,7 @@ export function IssueNewSheet() {
 
   return (
     <Sheet
-      title={isRequester ? 'Report something' : 'New issue or request'}
+      title="New issue or request"
       sub="A photo, where it is, one line. That is enough."
       onClose={closeSheet}
       footer={
@@ -457,7 +466,7 @@ export function IssueNewSheet() {
         <Text
           value={f.title}
           onChange={(v) => setF({ ...f, title: v })}
-          placeholder={isRequester ? 'Meeting room AC is rattling' : 'Bedroom 2 blind will not stay up'}
+          placeholder="Bedroom 2 blind will not stay up"
           autoFocus
         />
       </Field>
@@ -697,7 +706,12 @@ export function IncidentNewSheet() {
                 'incidents',
                 {
                   ...f,
-                  zone: db.areas.find((a) => a.id === f.areaId)?.zone ?? 'shared',
+                  /* 'household' is the only member of the zone enum, and
+                     picking an area is optional — so the old 'shared'
+                     fallback reached the database on every incident
+                     logged without one, was refused with 22P02, and the
+                     report vanished off the screen behind a toast. */
+                  zone: db.areas.find((a) => a.id === f.areaId)?.zone ?? 'household',
                   areaId: f.areaId || undefined,
                   reportedBy: user.id,
                   photos: [],

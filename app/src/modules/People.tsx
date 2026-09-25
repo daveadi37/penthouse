@@ -526,7 +526,7 @@ export function DeliveryNewSheet() {
   return (
     <Sheet
       title="Log a delivery"
-      sub="As it lands. The recipient is notified automatically — you do not need to find them."
+      sub="As it lands. Log it here and tell the recipient yourself — nothing is sent for you."
       onClose={closeSheet}
       footer={
         <>
@@ -566,7 +566,7 @@ export function DeliveryNewSheet() {
         />
       </Field>
       {!f.forProfileId && (
-        <Field label="Name"><Text value={f.forWhom} onChange={(v) => setF({ ...f, forWhom: v })} placeholder="Household — divo oil" /></Field>
+        <Field label="Name"><Text value={f.forWhom} onChange={(v) => setF({ ...f, forWhom: v })} placeholder="Household — groceries" /></Field>
       )}
       <div className="three-col">
         <Field label="Arrived"><Text type="time" value={f.arrived} onChange={(v) => setF({ ...f, arrived: v })} /></Field>
@@ -584,7 +584,7 @@ export function ContractorNewSheet() {
   const closeSheet = useStore((s) => s.closeSheet);
   const upsert = useStore((s) => s.upsert);
   const [f, setF] = React.useState({
-    vendorId: '', vendorName: '', purpose: '', areaId: '', zone: 'shared' as Visitor['zone'],
+    vendorId: '', vendorName: '', purpose: '', areaId: '', zone: 'household' as Visitor['zone'],
     date: todayStr(), scheduled: '09:00', escortedBy: '', issueId: '', contractId: '', notes: '',
   });
 

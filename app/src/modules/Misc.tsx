@@ -7,10 +7,9 @@ import {money, plural} from '@/lib/format';
 import {freqLabel} from '@/lib/schedule';
 import {allAlerts, areaName, buildReport, burnRate, profileName, quietDevices, staffList, unreadFor} from '@/lib/selectors';
 import type { Alert } from '@/lib/selectors';
-import { STAFF_ROLES } from '@/types';
+import { AREA_TYPES, STAFF_ROLES } from '@/types';
 import type { IssuePriority, LibraryTask } from '@/types';
 import {Avatar, Bar, Btn, Callout, Card, Chip, Empty, Field, Group, KV, List, PageHead, Ring, Row, SectionHead, Seg, Select, Sheet, Stat, Text, ZoneChip, cx} from '@/components/ui';
-import {ZoneFilterBar} from '@/components/Shell';
 
 /* ============================================================
    HOUSE MANUAL
@@ -19,7 +18,6 @@ import {ZoneFilterBar} from '@/components/Shell';
 export function Manual() {
   const route = useRoute();
   const db = useStore((s) => s.db);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   const [q, setQ] = React.useState('');
 
   const procId = detailId(route);
@@ -74,7 +72,6 @@ export function Manual() {
   }
 
   let list = db.procedures;
-  if (zoneFilter !== 'all') list = list.filter((p) => p.zone === zoneFilter || p.zone === 'any');
   if (q) list = list.filter((p) => (p.title + p.purpose + p.standard + p.watchFor).toLowerCase().includes(q.toLowerCase()));
 
   const cats = [...new Set(list.map((p) => p.category))];
@@ -87,7 +84,6 @@ export function Manual() {
         sub="The standard, the method, and what to watch for. Written once, followed by everyone."
       />
       <div className="row wrap" style={{ gap: 8, marginBottom: 14 }}>
-        <ZoneFilterBar />
         <input className="in" style={{ width: 'auto', minHeight: 36, flex: '1 1 220px' }} placeholder="Search procedures" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
@@ -320,7 +316,7 @@ export function Alerts() {
       <PageHead
         eyebrow="Alert centre"
         title="Everything that wants attention"
-        sub="One query over the same data that fires the push notifications — so what you see and what was sent cannot diverge."
+        sub="What the house has raised for you. Nothing is sent to a phone — notifications are read here."
       />
 
       <div className="grid four" style={{ marginBottom: 16 }}>
@@ -593,9 +589,7 @@ export function Admin() {
 function Areas() {
   const db = useStore((s) => s.db);
   const openSheet = useStore((s) => s.openSheet);
-  const zoneFilter = useStore((s) => s.zoneFilter);
   let list = db.areas;
-  if (zoneFilter !== 'all') list = list.filter((a) => a.zone === zoneFilter);
 
   return (
     <>
@@ -605,7 +599,6 @@ function Areas() {
         action={<Btn size="xs" variant="ghost" onClick={() => openSheet('area-new')}>Add an area</Btn>}
       />
       <div className="row wrap" style={{ gap: 8, marginBottom: 12 }}>
-        <ZoneFilterBar />
       </div>
       <List>
         {list.map((a) => (
@@ -766,7 +759,7 @@ function HouseSettings() {
           <Field label="Day starts"><Text type="time" value={s.planStart} onChange={(v) => setS({ ...s, planStart: v })} /></Field>
           <Field label="Day ends"><Text type="time" value={s.planEnd} onChange={(v) => setS({ ...s, planEnd: v })} /></Field>
         </div>
-        <SectionHead title="The working week" sub="Which days the cooks and the deliveries keep to, and what counts as out of hours in the visitor log. The prayers do not keep to it, which is why the sheet runs seven days a week." />
+        <SectionHead title="The working week" sub="Which days deliveries and contractors keep to, and what counts as out of hours in the visitor log." />
         <div className="two">
           <Field label="Day starts"><Text type="time" value={s.workingWeek.start} onChange={(v) => setS({ ...s, workingWeek: { ...s.workingWeek, start: v } })} /></Field>
           <Field label="Day ends"><Text type="time" value={s.workingWeek.end} onChange={(v) => setS({ ...s, workingWeek: { ...s.workingWeek, end: v } })} /></Field>
@@ -858,7 +851,7 @@ export function LibSheet({ id }: { id?: string }) {
             <Select
               value={f.areaType ?? ''}
               onChange={(v) => set('areaType', v)}
-              options={['bedroom', 'bathroom', 'kitchen', 'living', 'shrine', 'prayer', 'utility', 'storage', 'outdoor', 'circulation'].map((t) => ({ value: t, label: t }))}
+              options={AREA_TYPES.map((t) => ({ value: t, label: t }))}
             />
           </Field>
         )}
@@ -950,7 +943,7 @@ export function AreaSheet({ id }: { id?: string }) {
           <Select
             value={f.type}
             onChange={(v) => set('type', v)}
-            options={['bedroom', 'bathroom', 'kitchen', 'living', 'shrine', 'prayer', 'utility', 'storage', 'outdoor', 'circulation'].map((t) => ({ value: t, label: t }))}
+            options={AREA_TYPES.map((t) => ({ value: t, label: t }))}
           />
         </Field>
         <Field label="Floor"><Text value={f.floor} onChange={(v) => set('floor', v)} /></Field>

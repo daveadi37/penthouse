@@ -1,39 +1,51 @@
 import { create } from 'zustand';
 import type {
+  ChatMessage,
   DB,
   DateStr,
-  DivoLog,
   ID,
   Issue,
   Notification,
   Profile,
   Role,
-  RunningSheet,
+  RoleDef,
   TaskInstance,
   Zone,
 } from '@/types';
-import { adapter, pushOutbox } from '@/lib/db';
+import { adapter } from '@/lib/db';
 import { createLogin, setPassword, type AuthResult } from '@/lib/auth';
-import { seedDB } from '@/seed';
-import { blankSheet, observanceDayNo, occasionFor } from '@/seed/prayer';
+import { DB_VERSION, emptyDB, seedDB } from '@/seed';
 import { buildDay, rebuildDay, type BuildInput, type RoutingContext } from '@/lib/schedule';
 import { addDays, today } from '@/lib/date';
-import { uid } from '@/lib/id';
-
-export type ZoneFilter = Zone | 'all';
-
-/** The five editable tables on the running sheet. */
-export type SheetSection = 'roster' | 'order' | 'menu' | 'shopping' | 'sheetGuests';
+import { newId, uid } from '@/lib/id';
+import { backendConfigured, supabase } from '@/lib/supabase';
+import {
+  attachMirror,
+  drain,
+  loadTier1,
+  loadTier2,
+  startSync,
+  type Mirror,
+} from '@/lib/sync/engine';
+import { startRealtime } from '@/lib/sync/realtime';
+import * as outbox from '@/lib/sync/outbox';
+import { idKindFor, isSynced, specFor, type WriteTarget } from '@/lib/sync/registry';
 
 interface UI {
   ready: boolean;
-  /** Who is signed in. The role switcher stands in for real auth. */
+  /** Who is signed in. Empty until the sign-in screen says otherwise. */
   userId: ID;
   date: DateStr;
-  zoneFilter: ZoneFilter;
   toast: string;
   /** Which record sheet is open, if any. */
   sheet: { kind: string; id?: string } | null;
+  /**
+   * Set when a configured backend could not be read on boot. The app
+   * shows a plain screen rather than the seeded house, because falling
+   * back to the seed against a real project is how somebody spends a
+   * morning entering stock into a database that was never reached.
+   */
+  bootError: string;
 }
 
 interface Store extends UI {
@@ -41,13 +53,13 @@ interface Store extends UI {
 
   /* lifecycle */
   init: () => Promise<void>;
-  persist: (entity: string, summary: string) => void;
+  /** Flush the mirror to the local cache. Nothing leaves the device. */
+  persist: () => void;
   resetAll: () => Promise<void>;
 
   /* ui */
   setUser: (id: ID) => void;
   setDate: (d: DateStr) => void;
-  setZoneFilter: (z: ZoneFilter) => void;
   openSheet: (kind: string, id?: string) => void;
   closeSheet: () => void;
   showToast: (msg: string) => void;
@@ -63,24 +75,31 @@ interface Store extends UI {
   markAllInGroup: (group: string, done: boolean) => void;
   regenerateDay: () => void;
 
-  /* the running sheet */
-  ensureSheet: (date: DateStr) => RunningSheet;
-  patchSheet: (date: DateStr, changes: Partial<RunningSheet>) => void;
-  tickCheck: (date: DateStr, groupId: ID, itemId: ID) => void;
-  upsertSheetRow: (date: DateStr, section: SheetSection, row: unknown) => void;
-  removeSheetRow: (date: DateStr, section: SheetSection, rowId: ID) => void;
-  toggleOrderRow: (date: DateStr, rowId: ID) => void;
-  startBreak: (date: DateStr) => void;
-  endBreak: (date: DateStr, breakId: ID, waterServed: boolean) => void;
-  logToiletCheck: (date: DateStr, clean: boolean, restocked: boolean, notes?: string) => void;
-  logDivo: (action: DivoLog['action'], oilLevel?: DivoLog['oilLevel'], notes?: string) => void;
-  postSheet: (date: DateStr, preparedBy: string) => { ok: boolean; problems: string[] };
-  checkSheet: (date: DateStr, by: ID) => void;
+  /* the house chat */
+  postChat: (text: string, photo?: string) => void;
+  togglePinMessage: (id: ID) => void;
 
   /* generic record editing — every module uses these three */
   upsert: <K extends keyof DB>(slice: K, record: unknown, label?: string) => void;
   remove: <K extends keyof DB>(slice: K, id: ID, label?: string) => void;
   patch: <K extends keyof DB>(slice: K, id: ID, changes: Record<string, unknown>, label?: string) => void;
+
+  /**
+   * Send one change to the database.
+   *
+   * The single door out. `fields` is a column mask naming the app
+   * fields this write claims — an update that sends a whole row lets
+   * a rename overwrite a stock count somebody took thirty seconds
+   * ago, so only inserts go whole.
+   */
+  write: (
+    slice: WriteTarget,
+    op: outbox.WriteOp,
+    rowId: ID,
+    record: Record<string, unknown>,
+    fields: string[],
+    summary: string,
+  ) => void;
 
   /* things with real behaviour beyond a field write */
   raiseIssue: (i: Partial<Issue> & { title: string; zone: Zone }) => ID;
@@ -93,35 +112,76 @@ interface Store extends UI {
   /* accounts — the only two calls that reach the service role, and they
      do it through an Edge Function rather than from the browser */
   setAccountPassword: (profileId: ID, password: string) => Promise<AuthResult>;
+
+  /**
+   * Save a role and its capability grid.
+   *
+   * Not `upsert('roles', …)`. The grid is a join table with a composite
+   * key and the sync layer writes whole rows keyed on `id`, so the
+   * capabilities were dropped on the floor — the screen said the role
+   * was saved and the next boot restored the database's grid.
+   */
+  saveRole: (rec: RoleDef) => Promise<void>;
 }
 
 let saveTimer: number | undefined;
 
 export const useStore = create<Store>((set, get) => ({
   ready: false,
-  // Earl is in charge overall and checks the sheet, so his view is the default.
-  userId: 'p-earl',
+  /* Nobody, until the sign-in screen names somebody. Defaulting to a real
+     person handed whoever opened the app that person's view of the house. */
+  userId: '',
   date: today(),
-  zoneFilter: 'all',
   toast: '',
   sheet: null,
+  bootError: '',
   db: seedDB(),
 
   /* ---------- lifecycle ---------- */
 
   init: async () => {
     const saved = await adapter.load();
-    const fresh = !saved || saved.version !== seedDB().version;
-    const db = fresh ? seedDB() : saved!;
-    if (fresh) seedHistory(db);
-    set({ db, ready: true });
-    // Materialise today so the app opens on a real day, not an empty one.
+    const cached = saved && saved.version === DB_VERSION ? saved : null;
+
+    /* No backend: exactly the app it has always been. The seeded house,
+       on this device, with no sign-in and nothing to reach. */
+    if (!backendConfigured) {
+      const db = cached ?? seedDB();
+      if (!cached) seedHistory(db);
+      set({ db, ready: true });
+      // Materialise today so the app opens on a real day, not an empty one.
+      get().ensureDay(get().date);
+      return;
+    }
+
+    /* A real project. The cache is a head start so the screen is not
+       blank while tier 1 lands — never the truth, and never the seed:
+       seedHistory() fabricates three weeks of finished days, and those
+       would be scored as real work in Reports. */
+    set({ db: cached ?? emptyDB() });
+    attachMirror(storeMirror(set, get));
+
+    const boot = await loadTier1();
+    if (!boot.ok) {
+      set({ ready: true, bootError: boot.message || 'The database could not be reached.' });
+      return;
+    }
+    if (boot.profiles === 0) {
+      set({ ready: true, bootError: 'no-profiles' });
+      return;
+    }
+
+    set({ ready: true, bootError: '' });
     get().ensureDay(get().date);
-    get().ensureSheet(get().date);
+
+    // After first paint: the four things the house actually touches,
+    // then the queue and the channels.
+    void loadTier2();
+    startSync();
+    startRealtime();
   },
 
-  persist: (entity, summary) => {
-    pushOutbox(entity, summary);
+  persist: () => {
     window.clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => {
       void adapter.save(get().db);
@@ -130,10 +190,17 @@ export const useStore = create<Store>((set, get) => ({
 
   resetAll: async () => {
     await adapter.reset();
+    if (backendConfigured) {
+      // Against a real project this clears the cache, not the house.
+      set({ sheet: null, date: today(), db: emptyDB() });
+      await loadTier1();
+      void loadTier2();
+      get().showToast('Local copy cleared — reloaded from the house records');
+      return;
+    }
     const db = seedDB();
     set({ db, sheet: null, date: today() });
     get().ensureDay(today());
-    get().ensureSheet(today());
     get().showToast('Everything reset to the seeded example data');
   },
 
@@ -147,9 +214,7 @@ export const useStore = create<Store>((set, get) => ({
   setDate: (d) => {
     set({ date: d });
     get().ensureDay(d);
-    get().ensureSheet(d);
   },
-  setZoneFilter: (z) => set({ zoneFilter: z }),
   openSheet: (kind, id) => set({ sheet: { kind, id } }),
   closeSheet: () => set({ sheet: null }),
   showToast: (msg) => {
@@ -166,7 +231,7 @@ export const useStore = create<Store>((set, get) => ({
     if (db.days[d]?.length) return db.days[d];
     const tasks = buildDay(buildInputFor(db, d));
     set((s) => ({ db: { ...s.db, days: { ...s.db.days, [d]: tasks } } }));
-    get().persist('days', `Built ${d}`);
+    get().persist();
     return tasks;
   },
 
@@ -174,7 +239,7 @@ export const useStore = create<Store>((set, get) => ({
     const { db, date } = get();
     const tasks = rebuildDay(db.days[date] ?? [], buildInputFor(db, date));
     set((s) => ({ db: { ...s.db, days: { ...s.db.days, [date]: tasks } } }));
-    get().persist('days', `Rebuilt ${date}`);
+    get().persist();
     get().showToast('Day rebuilt — ticks and notes kept');
   },
 
@@ -185,17 +250,17 @@ export const useStore = create<Store>((set, get) => ({
         ? { ...t, done: !t.done, doneBy: !t.done ? userId : undefined, doneAt: !t.done ? Date.now() : undefined }
         : t,
     );
-    get().persist('days', 'Task ticked');
+    get().persist();
   },
 
   setTaskNote: (taskId, note) => {
     mutateDay(set, get, get().date, (t) => (t.id === taskId ? { ...t, note } : t));
-    get().persist('days', 'Task note');
+    get().persist();
   },
 
   assignTask: (taskId, staffId) => {
     mutateDay(set, get, get().date, (t) => (t.id === taskId ? { ...t, assignedTo: staffId } : t));
-    get().persist('days', 'Task reassigned');
+    get().persist();
     const p = get().db.profiles.find((x) => x.id === staffId);
     if (p) {
       get().notify({
@@ -204,13 +269,13 @@ export const useStore = create<Store>((set, get) => ({
         body: get().db.days[get().date]?.find((t) => t.id === taskId)?.title ?? '',
         url: '#/planner', priority: 'normal',
       });
-      get().showToast(`Assigned to ${p.name} — push sent`);
+      get().showToast(`Assigned to ${p.name}`);
     }
   },
 
   scheduleTask: (taskId, time) => {
     mutateDay(set, get, get().date, (t) => (t.id === taskId ? { ...t, scheduledAt: time } : t));
-    get().persist('days', 'Task rescheduled');
+    get().persist();
   },
 
   addAdhocTask: (t) => {
@@ -220,7 +285,7 @@ export const useStore = create<Store>((set, get) => ({
       role: 'any', estMinutes: 15, done: false, source: 'adhoc', order: 99000, ...t,
     };
     set((s) => ({ db: { ...s.db, days: { ...s.db.days, [date]: [...(s.db.days[date] ?? []), task] } } }));
-    get().persist('days', 'Ad-hoc task added');
+    get().persist();
     get().showToast('Added to today');
   },
 
@@ -229,7 +294,7 @@ export const useStore = create<Store>((set, get) => ({
     set((s) => ({
       db: { ...s.db, days: { ...s.db.days, [date]: (s.db.days[date] ?? []).filter((t) => t.id !== taskId) } },
     }));
-    get().persist('days', 'Task removed');
+    get().persist();
   },
 
   markAllInGroup: (group, done) => {
@@ -239,200 +304,79 @@ export const useStore = create<Store>((set, get) => ({
         ? { ...t, done, doneBy: done ? userId : undefined, doneAt: done ? Date.now() : undefined }
         : t,
     );
-    get().persist('days', 'Group ticked');
+    get().persist();
   },
 
   /* ============================================================
-     The running sheet.
+     The house chat.
 
-     One sheet per date, edited in place. Nothing here throws: the
-     sheet is filled in on a phone in a busy kitchen, so a missing
-     row or a stale id is a no-op, and the one rule that really
-     matters — never post it with the prayer time or the meals count
-     blank — hands back the problems instead of refusing silently.
+     One thread, and everybody is in it. A message is how Earl tells
+     Marvin the school run has moved, and how Rosie says the oven is
+     playing up before it becomes a fault report. So posting pushes to
+     everyone else who is active rather than only to whoever somebody
+     remembered to name.
      ============================================================ */
 
-  ensureSheet: (date) => {
-    const existing = get().db.sheets[date];
-    if (existing) return existing;
-    const sheet = newSheetFor(get().db, date);
-    set((s) => ({ db: { ...s.db, sheets: { ...s.db.sheets, [date]: sheet } } }));
-    get().persist('sheets', `Started the sheet for ${date}`);
-    return sheet;
-  },
-
-  patchSheet: (date, changes) => {
-    writeSheet(set, get, date, (sheet) => ({ ...sheet, ...changes }));
-    get().persist('sheets', 'Sheet updated');
-  },
-
-  tickCheck: (date, groupId, itemId) => {
-    const { userId } = get();
-    writeSheet(set, get, date, (sheet) => ({
-      ...sheet,
-      checks: sheet.checks.map((g) =>
-        g.id !== groupId
-          ? g
-          : {
-              ...g,
-              items: g.items.map((i) =>
-                i.id !== itemId
-                  ? i
-                  : {
-                      ...i,
-                      done: !i.done,
-                      doneBy: !i.done ? userId : undefined,
-                      doneAt: !i.done ? Date.now() : undefined,
-                    },
-              ),
-            },
-      ),
-    }));
-    get().persist('sheets', 'Check ticked');
-  },
-
-  upsertSheetRow: (date, section, row) => {
-    const rec = row as { id?: ID; order?: number };
-    const existing = get().db.sheets[date];
-    const isNew =
-      !rec.id || !sectionRows(existing ?? newSheetFor(get().db, date), section).some((r) => r.id === rec.id);
-    if (!rec.id) rec.id = uid('sr');
-    writeSheet(set, get, date, (sheet) => {
-      const list = sectionRows(sheet, section);
-      if (list.some((r) => r.id === rec.id)) {
-        const edited = list.map((r) => (r.id === rec.id ? (rec as { id: ID; order: number }) : r));
-        return withSection(sheet, section, edited);
-      }
-      // A new row goes on the end unless the caller placed it.
-      const added = { ...(rec as { id: ID; order?: number }) };
-      if (added.order == null) added.order = list.length + 1;
-      return withSection(sheet, section, [...list, added as { id: ID; order: number }]);
-    });
-    get().persist('sheets', 'Sheet row saved');
-    // Only a new row is worth interrupting for — editing one is not.
-    if (isNew) get().showToast('Row added');
-  },
-
-  removeSheetRow: (date, section, rowId) => {
-    writeSheet(set, get, date, (sheet) =>
-      withSection(sheet, section, sectionRows(sheet, section).filter((r) => r.id !== rowId)),
-    );
-    get().persist('sheets', 'Sheet row removed');
-    get().showToast('Row removed');
-  },
-
-  toggleOrderRow: (date, rowId) => {
-    const { userId } = get();
-    writeSheet(set, get, date, (sheet) => ({
-      ...sheet,
-      order: sheet.order.map((r) =>
-        r.id !== rowId
-          ? r
-          : {
-              ...r,
-              done: !r.done,
-              doneBy: !r.done ? userId : undefined,
-              doneAt: !r.done ? Date.now() : undefined,
-            },
-      ),
-    }));
-    get().persist('sheets', 'Order of the day ticked');
-  },
-
-  startBreak: (date) => {
-    writeSheet(set, get, date, (sheet) => ({
-      ...sheet,
-      breaks: [...sheet.breaks, { id: uid('br'), startedAt: Date.now(), waterServed: false }],
-    }));
-    get().persist('sheets', 'Break started');
-    get().showToast('Break started — water round to everyone');
-  },
-
-  endBreak: (date, breakId, waterServed) => {
-    const { userId } = get();
-    writeSheet(set, get, date, (sheet) => ({
-      ...sheet,
-      breaks: sheet.breaks.map((b) =>
-        b.id !== breakId
-          ? b
-          : { ...b, endedAt: Date.now(), waterServed, servedBy: waterServed ? userId : b.servedBy },
-      ),
-    }));
-    get().persist('sheets', 'Break ended');
-    get().showToast(
-      waterServed ? 'Break ended — water served' : 'Break ended, water not served. Tell Earl.',
-    );
-  },
-
-  logToiletCheck: (date, clean, restocked, notes) => {
-    const { userId } = get();
-    writeSheet(set, get, date, (sheet) => ({
-      ...sheet,
-      toiletChecks: [
-        ...sheet.toiletChecks,
-        { id: uid('tc'), at: Date.now(), by: userId, clean, restocked, notes },
-      ],
-    }));
-    get().persist('sheets', 'Guest toilet checked');
-    get().showToast(clean ? 'Logged — next check in 20 minutes' : 'Logged as not clean — sort it now');
-  },
-
-  logDivo: (action, oilLevel, notes) => {
-    const { userId } = get();
-    const entry: DivoLog = { id: uid('dv'), at: Date.now(), by: userId, action, oilLevel, notes };
-    set((s) => ({ db: { ...s.db, divoLog: [entry, ...s.db.divoLog] } }));
-    get().persist('divoLog', `Divo ${action}`);
-    get().showToast(`Divo ${action}`);
-
-    // Low or empty is the whole reason the shopping list keeps two spare.
-    if (oilLevel === 'low' || oilLevel === 'empty') {
-      get().notify({
-        profileId: 'p-earl', kind: 'stock_low',
-        title: `Divo oil is ${oilLevel}`,
-        body: 'Keep 2 spare bottles. Marvin buys it first thing.',
-        url: '#/shrine', priority: oilLevel === 'empty' ? 'high' : 'normal',
-      });
-    }
-  },
-
-  postSheet: (date, preparedBy) => {
-    const sheet = get().db.sheets[date];
-    const problems: string[] = [];
-    if (!sheet) {
-      problems.push('There is no sheet for this day yet.');
+  postChat: (text, photo) => {
+    const body = text.trim();
+    if (!body && !photo) return;
+    const { userId, db } = get();
+    // chat_messages.id is a uuid column, like every other posted row.
+    const msg: ChatMessage = { id: newId(), by: userId, at: Date.now(), text: body, photo };
+    set((s) => ({ db: { ...s.db, chat: [...s.db.chat, msg] } }));
+    if (isSynced('chat')) {
+      get().write('chat', 'insert', msg.id, msg as unknown as Record<string, unknown>, [], 'Message posted');
     } else {
-      if (!sheet.prayersStart) problems.push('The prayer start time is blank.');
-      if (sheet.meals == null || sheet.meals <= 0) problems.push('The number of meals is blank.');
-    }
-    if (!preparedBy.trim()) problems.push('Nobody is named as having prepared it.');
-    if (problems.length) {
-      get().showToast(`Not sent — ${problems[0]}`);
-      return { ok: false, problems };
+      get().persist();
     }
 
-    const now = Date.now();
-    const checkedBy = get().db.settings.checkedByName;
-    writeSheet(set, get, date, (s) => ({
-      ...s,
-      status: 'posted',
-      preparedBy: preparedBy.trim(),
-      preparedAt: s.preparedAt ?? now,
-      checkedBy: s.checkedBy ?? checkedBy,
-      checkedAt: s.checkedAt ?? now,
-      postedAt: now,
-    }));
-    get().persist('sheets', `Sheet posted for ${date}`);
-    get().showToast(`Posted to the ${get().db.settings.whatsappGroup} group`);
-    return { ok: true, problems: [] };
+    const from = nameOf(db.profiles, userId);
+    db.profiles
+      .filter((p) => p.active && p.id !== userId)
+      .forEach((p) =>
+        get().notify({
+          profileId: p.id,
+          kind: 'chat',
+          title: `${from} posted to the house chat`,
+          body: body.slice(0, 120) || 'Sent a photo',
+          url: '#/chat',
+          priority: 'normal',
+        }),
+      );
   },
 
-  checkSheet: (date, by) => {
-    const name = nameOf(get().db.profiles, by);
-    writeSheet(set, get, date, (s) =>
-      s.status === 'draft' ? { ...s, status: 'checked', checkedBy: name, checkedAt: Date.now() } : s,
-    );
-    get().persist('sheets', 'Sheet checked');
-    get().showToast(`Checked by ${name}`);
+  /* A pin is how a standing instruction stays at the top of the thread
+     instead of being retyped every week.
+
+     The only field on a posted message that may change — the body is
+     immutable by trigger — so this is a two-column update and never a
+     rewrite of the message. */
+  togglePinMessage: (id) => {
+    const { userId } = get();
+    let pinned: ChatMessage | undefined;
+    set((s) => ({
+      db: {
+        ...s.db,
+        chat: s.db.chat.map((m) => {
+          if (m.id !== id) return m;
+          pinned = { ...m, pinned: !m.pinned, pinnedBy: !m.pinned ? userId : undefined };
+          return pinned;
+        }),
+      },
+    }));
+    if (!pinned) return;
+    if (isSynced('chat')) {
+      get().write(
+        'chat',
+        'update',
+        id,
+        pinned as unknown as Record<string, unknown>,
+        ['pinned', 'pinnedBy'],
+        'Message pinned',
+      );
+    } else {
+      get().persist();
+    }
   },
 
   /* ---------- accounts ---------- */
@@ -445,48 +389,156 @@ export const useStore = create<Store>((set, get) => ({
     if (res.ok) {
       get().patch('profiles', profileId, { canSignIn: true }, 'Login created');
     }
-    get().persist('profiles', 'Password set');
+    get().persist();
     return res;
+  },
+
+  saveRole: async (rec) => {
+    /* The mirror first, so the screen is right immediately. */
+    set((s) => {
+      const roles = s.db.roles.some((r) => r.id === rec.id)
+        ? s.db.roles.map((r) => (r.id === rec.id ? { ...r, ...rec } : r))
+        : [...s.db.roles, rec];
+      return { db: { ...s.db, roles } };
+    });
+    get().persist();
+
+    if (!backendConfigured || !supabase) {
+      get().showToast(`Role “${rec.name}” saved`);
+      return;
+    }
+
+    /* One call, one transaction. The row and the grid cannot be saved
+       separately: a new role's row would still be sitting in the outbox
+       when the capabilities arrived, and they would fail the foreign
+       key. The function runs as the caller, so the policies still
+       refuse a rank above your own or a capability you do not hold —
+       the check in the sheet is a courtesy, this is the enforcement. */
+    const { error } = await supabase.rpc('save_role', {
+      p_id: rec.id,
+      p_name: rec.name,
+      p_rank: rec.rank,
+      p_description: rec.description ?? '',
+      p_works: rec.works ?? false,
+      p_caps: rec.capabilities,
+    });
+
+    if (error) {
+      get().showToast(`“${rec.name}” was not saved — ${error.message}`);
+      return;
+    }
+    get().showToast(`Role “${rec.name}” saved`);
   },
 
   /* ---------- generic record editing ---------- */
 
   upsert: (slice, record, label) => {
     const rec = record as { id?: ID };
-    if (!rec.id) rec.id = uid();
+    // The uuid tables reject anything else with 22P02, and a new row
+    // needs its id the instant it is drawn, not when the insert lands.
+    if (!rec.id) rec.id = idKindFor(slice) === 'uuid' ? newId() : uid();
+    let existed = false;
     set((s) => {
       const list = (s.db[slice] as unknown as { id: ID }[]) ?? [];
-      const exists = list.some((x) => x.id === rec.id);
-      const next = exists ? list.map((x) => (x.id === rec.id ? (rec as { id: ID }) : x)) : [...list, rec as { id: ID }];
+      existed = list.some((x) => x.id === rec.id);
+      const next = existed ? list.map((x) => (x.id === rec.id ? (rec as { id: ID }) : x)) : [...list, rec as { id: ID }];
       return { db: { ...s.db, [slice]: next } as DB };
     });
-    get().persist(String(slice), label ?? 'Saved');
+
+    if (isSynced(slice)) {
+      /* A form's Save button: the person had every field in front of
+         them, so an edit claims all of them. A new row goes as an
+         upsert on id, which is what makes a retry after a timeout
+         whose answer never arrived safe to send again. */
+      const fields = existed ? Object.keys(specFor(slice)?.map ?? {}) : [];
+      get().write(
+        slice,
+        existed ? 'update' : 'insert',
+        rec.id,
+        rec as Record<string, unknown>,
+        fields,
+        label ?? 'Saved',
+      );
+    } else {
+      get().persist();
+    }
     get().showToast(label ?? 'Saved');
   },
 
   remove: (slice, id, label) => {
+    // Kept for the delete intent: the queue holds what was removed, so
+    // a refusal can be explained in terms of the thing and not the id.
+    const current = get().db[slice];
+    const before = Array.isArray(current)
+      ? (current as { id: ID }[]).find((x) => x.id === id)
+      : undefined;
     set((s) => {
       const list = (s.db[slice] as unknown as { id: ID }[]) ?? [];
       return { db: { ...s.db, [slice]: list.filter((x) => x.id !== id) } as DB };
     });
-    get().persist(String(slice), label ?? 'Deleted');
+    if (isSynced(slice)) {
+      get().write(slice, 'delete', id, (before ?? { id }) as Record<string, unknown>, [], label ?? 'Deleted');
+    } else {
+      get().persist();
+    }
     get().showToast(label ?? 'Deleted');
   },
 
   patch: (slice, id, changes, label) => {
+    let merged: Record<string, unknown> | undefined;
     set((s) => {
       const list = (s.db[slice] as unknown as { id: ID }[]) ?? [];
       return {
-        db: { ...s.db, [slice]: list.map((x) => (x.id === id ? { ...x, ...changes } : x)) } as DB,
+        db: {
+          ...s.db,
+          [slice]: list.map((x) => {
+            if (x.id !== id) return x;
+            merged = { ...x, ...changes };
+            return merged as { id: ID };
+          }),
+        } as DB,
       };
     });
-    get().persist(String(slice), label ?? 'Updated');
+    if (!merged) return;
+
+    if (isSynced(slice)) {
+      /* The column mask, and the reason it exists: a patch that sent
+         the whole row would carry every other field as it stood when
+         this screen loaded, so renaming a product would overwrite a
+         stock count somebody took thirty seconds ago. Only the keys
+         that actually changed go up. */
+      get().write(slice, 'update', id, merged, Object.keys(changes), label ?? 'Updated');
+    } else {
+      get().persist();
+    }
+  },
+
+  /* ============================================================
+     The one door out.
+
+     Everything above that changes a synced slice arrives here, and
+     nothing else in the app talks to the database at all. The intent
+     is queued first and the cache flushed second, so a tab closed
+     between the two still has the write.
+     ============================================================ */
+
+  write: (slice, op, rowId, record, fields, summary) => {
+    const res = outbox.enqueue({ at: Date.now(), slice, op, rowId, record, fields, summary });
+    if (!res.ok) {
+      // Five hundred deep and still not sent. Refusing the write and
+      // saying so beats accepting it into a queue that is already
+      // holding more than anyone can account for.
+      get().showToast('Too much is waiting to be saved — reconnect before making more changes.');
+    }
+    get().persist();
+    void drain();
   },
 
   /* ---------- behaviour ---------- */
 
   raiseIssue: (i) => {
-    const id = uid('is');
+    // issues.id is a uuid column, so the report is born with one.
+    const id = newId();
     const issue: Issue = {
       id, kind: 'fault', detail: '',
       priority: 'normal', status: 'reported',
@@ -494,7 +546,13 @@ export const useStore = create<Store>((set, get) => ({
       photos: [], comments: [], ...i,
     };
     set((s) => ({ db: { ...s.db, issues: [issue, ...s.db.issues] } }));
-    get().persist('issues', 'Issue raised');
+    if (isSynced('issues')) {
+      // photos and comments are rows of their own tables; the mapper
+      // carries neither, so the insert is the issue alone.
+      get().write('issues', 'insert', id, issue as unknown as Record<string, unknown>, [], 'Issue raised');
+    } else {
+      get().persist();
+    }
 
     // Escalation push: Earl always, the owner if urgent.
     get().notify({
@@ -511,7 +569,7 @@ export const useStore = create<Store>((set, get) => ({
         url: `#/issues/${id}`, priority: 'urgent',
       });
     }
-    get().showToast('Reported — the manager has been notified');
+    get().showToast('Reported — raised for the manager');
     return id;
   },
 
@@ -534,17 +592,27 @@ export const useStore = create<Store>((set, get) => ({
     get().showToast(`Moved to ${status.replace('_', ' ')}`);
   },
 
+  /* A comment is a row in issue_comments, not a field of the issue.
+     It is nested in the mirror because that is how every screen reads
+     it, and written to its own table because that is where it lives —
+     sending the parent issue instead would rewrite the whole report
+     to add one line to the thread. */
   commentOnIssue: (id, text) => {
     const { userId } = get();
+    const comment = { id: newId(), by: userId, at: Date.now(), text };
     set((s) => ({
       db: {
         ...s.db,
         issues: s.db.issues.map((i) =>
-          i.id === id ? { ...i, comments: [...i.comments, { id: uid('ic'), by: userId, at: Date.now(), text }] } : i,
+          i.id === id ? { ...i, comments: [...i.comments, comment] } : i,
         ),
       },
     }));
-    get().persist('issues', 'Comment added');
+    if (isSynced('issueComments')) {
+      get().write('issueComments', 'insert', comment.id, { ...comment, issueId: id }, [], 'Comment added');
+    } else {
+      get().persist();
+    }
     const issue = get().db.issues.find((x) => x.id === id);
     if (issue && issue.reportedBy !== userId) {
       get().notify({
@@ -555,22 +623,43 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
+  /* ============================================================
+     Stock, which moves rather than being set.
+
+     What goes up is the movement and never the quantity. An
+     apply_movement() trigger adds the delta to inventory_items.qty
+     server-side, so sending the new qty as well would land the same
+     change twice — Rosie takes two bottles out and four disappear.
+
+     The local qty below is optimistic, so the number on the shelf
+     card changes under her thumb. It is corrected by the realtime
+     UPDATE on inventory_items that the trigger itself causes.
+     ============================================================ */
   adjustStock: (itemId, delta, reason) => {
     const { userId, db } = get();
     const item = db.inventory.find((i) => i.id === itemId);
     if (!item) return;
     const nextQty = Math.max(0, Math.round((item.qty + delta) * 100) / 100);
+    const movement = { id: newId(), itemId, delta, reason, by: userId, at: Date.now() };
     set((s) => ({
       db: {
         ...s.db,
         inventory: s.db.inventory.map((i) => (i.id === itemId ? { ...i, qty: nextQty } : i)),
-        movements: [
-          ...s.db.movements,
-          { id: uid('mv'), itemId, delta, reason, by: userId, at: Date.now() },
-        ],
+        movements: [...s.db.movements, movement],
       },
     }));
-    get().persist('inventory', `${item.name} ${delta > 0 ? '+' : ''}${delta}`);
+    if (isSynced('movements')) {
+      get().write(
+        'movements',
+        'insert',
+        movement.id,
+        movement,
+        [],
+        `${item.name} ${delta > 0 ? '+' : ''}${delta}`,
+      );
+    } else {
+      get().persist();
+    }
 
     // Crossing the minimum is the escalation, not sitting below it.
     if (item.qty >= item.min && nextQty < item.min) {
@@ -589,7 +678,7 @@ export const useStore = create<Store>((set, get) => ({
     if (pref && cls && !pref.classes[cls]) return; // muted by preference
     const rec: Notification = { ...n, id: uid('nt'), createdAt: Date.now(), sentAt: Date.now() };
     set((s) => ({ db: { ...s.db, notifications: [rec, ...s.db.notifications] } }));
-    get().persist('notifications', 'Push queued');
+    get().persist();
   },
 
   markNotificationsRead: (profileId) => {
@@ -601,9 +690,121 @@ export const useStore = create<Store>((set, get) => ({
         ),
       },
     }));
-    get().persist('notifications', 'Marked read');
+    get().persist();
   },
 }));
+
+/* ============================================================
+   The mirror the sync engine writes into.
+
+   Handed over once, in init(), and it is the only way anything in
+   src/lib/sync reaches the store. Passing it in rather than letting
+   the engine import useStore is what keeps the two out of a cycle,
+   and it is also the seam: all eighteen screens go on reading db.x
+   synchronously and none of them knows a row arrived over a socket.
+   ============================================================ */
+
+type Row = Record<string, unknown>;
+
+/**
+ * A row from the database carries its own columns and nothing else.
+ * An issue's thread and its photographs are separate tables, and
+ * every screen reads them as arrays — so a report that arrives before
+ * its thread is hydrated still has to have an empty one, or the first
+ * render of Issues throws on undefined.
+ */
+function normalise(slice: WriteTarget, record: Row): Row {
+  switch (slice) {
+    case 'issues':
+      return { photos: [], comments: [], ...record };
+    case 'incidents':
+      return { photos: [], ...record };
+    case 'meals':
+      return { ingredients: [], ...record };
+    default:
+      return record;
+  }
+}
+
+function storeMirror(
+  set: (fn: (s: Store) => Partial<Store>) => void,
+  get: () => Store,
+): Mirror {
+  const listOf = (slice: WriteTarget): { id: ID }[] | null => {
+    if (slice === 'issueComments') return null;
+    const v = get().db[slice as keyof DB];
+    return Array.isArray(v) ? (v as { id: ID }[]) : null;
+  };
+
+  return {
+    replaceSlice(slice, rows) {
+      if (slice === 'issueComments') return;
+      const list = rows.map((r) => normalise(slice, r));
+      set((s) => ({ db: { ...s.db, [slice]: list } as DB }));
+      get().persist();
+    },
+
+    applyRow(slice, record) {
+      if (slice === 'issueComments') return;
+      const id = String(record.id ?? '');
+      if (!id) return;
+      set((s) => {
+        const list = (s.db[slice as keyof DB] as unknown as { id: ID }[]) ?? [];
+        const exists = list.some((x) => x.id === id);
+        const row = normalise(slice, record) as unknown as { id: ID };
+        /* A row nobody has seen lands where a local one would. Only
+           raiseIssue puts a new record at the front; upsert appends.
+           Matching that here is what stops a buy-list line typed on
+           Marvin's phone appearing at the top of Rosie's list while
+           the one she just added sits at the bottom. */
+        const next = exists
+          ? list.map((x) => (x.id === id ? { ...x, ...row } : x))
+          : slice === 'issues'
+            ? [row, ...list]
+            : [...list, row];
+        return { db: { ...s.db, [slice]: next } as DB };
+      });
+      get().persist();
+    },
+
+    dropRow(slice, rowId) {
+      if (slice === 'issueComments') {
+        // A refused comment comes out of whichever thread holds it.
+        set((s) => ({
+          db: {
+            ...s.db,
+            issues: s.db.issues.map((i) =>
+              i.comments.some((c) => c.id === rowId)
+                ? { ...i, comments: i.comments.filter((c) => c.id !== rowId) }
+                : i,
+            ),
+          },
+        }));
+        get().persist();
+        return;
+      }
+      set((s) => {
+        const list = (s.db[slice as keyof DB] as unknown as { id: ID }[]) ?? [];
+        return { db: { ...s.db, [slice]: list.filter((x) => x.id !== rowId) } as DB };
+      });
+      get().persist();
+    },
+
+    getRow(slice, rowId) {
+      const list = listOf(slice);
+      return (list?.find((x) => x.id === rowId) as unknown as Row) ?? undefined;
+    },
+
+    setSettings(patch) {
+      set((s) => ({ db: { ...s.db, settings: { ...s.db.settings, ...patch } } as DB }));
+      get().persist();
+    },
+
+    say(message) {
+      get().showToast(message);
+    },
+  };
+}
 
 /* ---------- helpers ---------- */
 
@@ -615,53 +816,6 @@ function mutateDay(
 ) {
   const existing = get().db.days[date] ?? [];
   set((s) => ({ db: { ...s.db, days: { ...s.db.days, [date]: existing.map(fn) } } }));
-}
-
-/* ---------- the running sheet ---------- */
-
-/**
- * A fresh sheet for a date, with the occasion line already filled in
- * from whichever observance is running — that line is the first thing
- * anyone reads, and nobody should have to count the days by hand.
- */
-function newSheetFor(db: DB, date: DateStr): RunningSheet {
-  const obs = db.observances.find((o) => o.active && date >= o.startDate && date <= o.endDate);
-  const sheet = blankSheet(date, obs ? occasionFor(obs, date) : '');
-  return obs ? { ...sheet, occasionDayNo: observanceDayNo(obs, date) } : sheet;
-}
-
-/** Editing a day that has no sheet yet creates one rather than failing. */
-function writeSheet(
-  set: (fn: (s: Store) => Partial<Store>) => void,
-  get: () => Store,
-  date: DateStr,
-  fn: (sheet: RunningSheet) => RunningSheet,
-) {
-  const current = get().db.sheets[date] ?? newSheetFor(get().db, date);
-  const next = fn(current);
-  set((s) => ({ db: { ...s.db, sheets: { ...s.db.sheets, [date]: next } } }));
-}
-
-/* The five editable tables all carry an id and an order, so the row
-   editors are written once against that shape rather than five times. */
-
-function sectionRows(sheet: RunningSheet, section: SheetSection): { id: ID; order: number }[] {
-  return sheet[section] as unknown as { id: ID; order: number }[];
-}
-
-function withSection(sheet: RunningSheet, section: SheetSection, rows: { id: ID; order: number }[]): RunningSheet {
-  switch (section) {
-    case 'roster':
-      return { ...sheet, roster: rows as unknown as RunningSheet['roster'] };
-    case 'order':
-      return { ...sheet, order: rows as unknown as RunningSheet['order'] };
-    case 'menu':
-      return { ...sheet, menu: rows as unknown as RunningSheet['menu'] };
-    case 'shopping':
-      return { ...sheet, shopping: rows as unknown as RunningSheet['shopping'] };
-    default:
-      return { ...sheet, sheetGuests: rows as unknown as RunningSheet['sheetGuests'] };
-  }
 }
 
 export function buildInputFor(db: DB, date: DateStr): BuildInput {
@@ -701,6 +855,7 @@ const NOTIF_CLASS: Record<string, 'assigned' | 'reminder' | 'escalation' | 'resp
   coverage_gap: 'escalation',
   delivery: 'response',
   incident: 'escalation',
+  chat: 'response',
 };
 
 /* The invented penthouse had a 'p-owner' and a 'p-mgr'. Seed records
@@ -724,46 +879,32 @@ export function roleLabel(db: DB, r: Role): string {
   return db.roles.find((x) => x.id === r)?.name ?? r;
 }
 
-/* ---------- the current user, and what they may do ---------- */
+/* ---------- the current user ---------- */
+
+/**
+ * Nobody. Returned when no profile matches the signed-in id, so an
+ * unknown session fails closed rather than inheriting whoever happens to
+ * be first in the list. can() in lib/access.ts already refuses an
+ * inactive profile whose role resolves to no row, so every screen in the
+ * app is shut without any of them needing to know about this case — and
+ * the return type stays Profile, so none of them changes.
+ */
+const ANONYMOUS_PROFILE: Profile = {
+  id: '',
+  name: 'Not signed in',
+  role: '',
+  staffRoles: [],
+  email: '',
+  phone: '',
+  initials: '',
+  active: false,
+};
 
 export function useUser(): Profile {
   const userId = useStore((s) => s.userId);
   const profiles = useStore((s) => s.db.profiles);
-  return profiles.find((p) => p.id === userId) ?? profiles[0]!;
+  return profiles.find((p) => p.id === userId) ?? ANONYMOUS_PROFILE;
 }
-
-export type Capability =
-  | 'seeAll'
-  | 'seeOperationalMoney'
-  | 'seeAllMoney'
-  | 'seeStaffRecords'
-  | 'seeOwnStaffRecord'
-  | 'editStructure'
-  | 'doTasks'
-  | 'approveMeals'
-  | 'raiseIssues'
-  | 'logTraffic'
-  | 'seeCredentials'
-  | 'seeReports'
-  | 'seeAudit';
-
-const CAPS: Record<Role, Capability[]> = {
-  owner: ['seeAll', 'seeAllMoney', 'seeOperationalMoney', 'seeStaffRecords', 'editStructure', 'doTasks', 'approveMeals', 'raiseIssues', 'logTraffic', 'seeCredentials', 'seeReports', 'seeAudit'],
-  manager: ['seeAll', 'seeOperationalMoney', 'editStructure', 'doTasks', 'approveMeals', 'raiseIssues', 'logTraffic', 'seeCredentials', 'seeReports', 'seeAudit'],
-  staff: ['doTasks', 'raiseIssues', 'logTraffic', 'seeOwnStaffRecord'],
-  family: ['raiseIssues'],
-  requester: ['raiseIssues'],
-};
-
-export function can(role: Role, cap: Capability): boolean {
-  return CAPS[role].includes(cap);
-}
-
-export function useCan(cap: Capability): boolean {
-  const user = useUser();
-  return can(user.role, cap);
-}
-
 
 /* ============================================================
    Three weeks of finished days, so the report has something real to
@@ -781,13 +922,10 @@ function seedHistory(db: DB): void {
     const tasks = buildDay(buildInputFor(db, date));
     if (!tasks.length) continue;
 
-    // Rosie runs high, Reza settles in over the period, Marvin is short-listed.
+    // Rosie runs high; Marvin is out on the road, so his list is short and
+    // he clears it. Anything unassigned drifts, which is the honest number.
     const rate = (staffId?: string, i = 0) => {
-      const base =
-        staffId === 'p-rosie' ? 0.95
-        : staffId === 'p-reza' ? 0.86 + Math.min(0.09, (21 - back) * 0.005)
-        : staffId === 'p-marvin' ? 0.98
-        : 0.7;
+      const base = staffId === 'p-rosie' ? 0.95 : staffId === 'p-marvin' ? 0.98 : 0.7;
       return base - wobble(back * 100 + i) * 0.14;
     };
 
